@@ -1,0 +1,929 @@
+import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import '/prefs_helper.dart';
+import 'editar_jurados.dart';
+
+class CrearJuradosScreen extends StatefulWidget {
+  const CrearJuradosScreen({super.key});
+
+  @override
+  State<CrearJuradosScreen> createState() => _CrearJuradosScreenState();
+}
+
+class _CrearJuradosScreenState extends State<CrearJuradosScreen> {
+  final _formKey = GlobalKey<FormState>();
+  final _nombreController = TextEditingController();
+  final _usuarioController = TextEditingController();
+  final _passwordController = TextEditingController();
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+
+  bool _isLoading = false;
+  bool _obscurePassword = true;
+
+  // Valores seleccionados para los dropdowns
+  String? _facultadSeleccionada;
+  String? _carreraSeleccionada;
+  String? _categoriaSeleccionada;
+
+  // Listas dinámicas
+  List<String> _facultades = [];
+  List<String> _carrerasDisponibles = [];
+  List<String> _categoriasDisponibles = [];
+
+  // Cache de datos
+  Map<String, Set<String>> _carrerasPorFacultad = {};
+  Map<String, Set<String>> _categoriasPorCarrera = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _cargarFacultades();
+  }
+
+  // Cargar solo facultades al inicio
+  Future<void> _cargarFacultades() async {
+    try {
+      final eventsSnapshot = await _firestore.collection('events').get();
+
+      final Set<String> facultadesSet = {};
+      final Map<String, Set<String>> carrerasMap = {};
+
+      for (var doc in eventsSnapshot.docs) {
+        final data = doc.data();
+        final facultad = data['facultad'] as String?;
+        final carrera = data['carrera'] as String?;
+
+        if (facultad != null && facultad.isNotEmpty) {
+          facultadesSet.add(facultad);
+
+          if (carrera != null && carrera.isNotEmpty) {
+            if (!carrerasMap.containsKey(facultad)) {
+              carrerasMap[facultad] = {};
+            }
+            carrerasMap[facultad]!.add(carrera);
+          }
+        }
+      }
+
+      if (mounted) {
+        setState(() {
+          _facultades = facultadesSet.toList()..sort();
+          _carrerasPorFacultad = carrerasMap;
+        });
+      }
+    } catch (e) {
+      print('Error al cargar facultades: $e');
+    }
+  }
+
+  // Cargar carreras cuando se selecciona una facultad
+  void _onFacultadChanged(String? facultad) {
+    setState(() {
+      _facultadSeleccionada = facultad;
+      _carreraSeleccionada = null;
+      _categoriaSeleccionada = null;
+      _categoriasDisponibles = [];
+
+      if (facultad != null && _carrerasPorFacultad.containsKey(facultad)) {
+        _carrerasDisponibles = _carrerasPorFacultad[facultad]!.toList()..sort();
+      } else {
+        _carrerasDisponibles = [];
+      }
+    });
+  }
+
+  // Cargar categorías cuando se selecciona una carrera
+  Future<void> _onCarreraChanged(String? carrera) async {
+    setState(() {
+      _carreraSeleccionada = carrera;
+      _categoriaSeleccionada = null;
+      _categoriasDisponibles = [];
+    });
+
+    if (carrera == null || _facultadSeleccionada == null) return;
+
+    try {
+      // Buscar eventos que coincidan con facultad y carrera
+      final eventsSnapshot = await _firestore
+          .collection('events')
+          .where('facultad', isEqualTo: _facultadSeleccionada)
+          .where('carrera', isEqualTo: carrera)
+          .get();
+
+      final Set<String> categoriasSet = {};
+
+      // Para cada evento, obtener las categorías de sus proyectos
+      for (var eventDoc in eventsSnapshot.docs) {
+        final proyectosSnapshot = await _firestore
+            .collection('events')
+            .doc(eventDoc.id)
+            .collection('proyectos')
+            .get();
+
+        for (var proyectoDoc in proyectosSnapshot.docs) {
+          final data = proyectoDoc.data();
+          final clasificacion = data['Clasificación'] as String?;
+
+          if (clasificacion != null && clasificacion.isNotEmpty) {
+            categoriasSet.add(clasificacion);
+          }
+        }
+      }
+
+      if (mounted) {
+        setState(() {
+          _categoriasDisponibles = categoriasSet.toList()..sort();
+
+          // Guardar en cache
+          final cacheKey = '$_facultadSeleccionada|$carrera';
+          _categoriasPorCarrera[cacheKey] = categoriasSet;
+        });
+
+        // Mostrar mensaje si no hay categorías
+        if (categoriasSet.isEmpty) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('No hay proyectos registrados para esta carrera'),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 2),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      print('Error al cargar categorías: $e');
+    }
+  }
+
+  @override
+  void dispose() {
+    _nombreController.dispose();
+    _usuarioController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _crearJurado() async {
+    if (!_formKey.currentState!.validate()) {
+      return;
+    }
+
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      final success = await PrefsHelper.createJuradoAccount(
+        nombre: _nombreController.text.trim(),
+        usuario: _usuarioController.text.trim(),
+        password: _passwordController.text,
+        facultad: _facultadSeleccionada!,
+        carrera: _carreraSeleccionada!,
+        categoria: _categoriaSeleccionada!,
+      );
+
+      if (!mounted) return;
+
+      if (success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Jurado creado exitosamente'),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 2),
+          ),
+        );
+
+        // Limpiar formulario
+        _formKey.currentState!.reset();
+        _nombreController.clear();
+        _usuarioController.clear();
+        _passwordController.clear();
+        setState(() {
+          _facultadSeleccionada = null;
+          _carreraSeleccionada = null;
+          _categoriaSeleccionada = null;
+          _carrerasDisponibles = [];
+          _categoriasDisponibles = [];
+        });
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Error: El usuario ya está registrado'),
+            backgroundColor: Colors.red,
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error al crear jurado: $e'),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF1E3A5F),
+      body: SafeArea(
+        child: Column(
+          children: [
+            // Header
+            Padding(
+              padding: const EdgeInsets.all(20.0),
+              child: Row(
+                children: [
+                  IconButton(
+                    icon: const Icon(
+                      Icons.arrow_back,
+                      color: Colors.white,
+                      size: 28,
+                    ),
+                    onPressed: () {
+                      Navigator.of(context).pop();
+                    },
+                    tooltip: 'Regresar',
+                  ),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'Crear Jurados',
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                  // Botón para ver/editar jurados
+                  IconButton(
+                    icon: const Icon(
+                      Icons.edit_document,
+                      color: Colors.white,
+                      size: 26,
+                    ),
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => const EditarJuradosScreen(),
+                        ),
+                      );
+                    },
+                    tooltip: 'Ver y Editar Jurados',
+                  ),
+                ],
+              ),
+            ),
+            // Content Area
+            Expanded(
+              child: Container(
+                decoration: const BoxDecoration(
+                  color: Color(0xFFE8EDF2),
+                  borderRadius: BorderRadius.only(
+                    topLeft: Radius.circular(30),
+                    topRight: Radius.circular(30),
+                  ),
+                ),
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.all(24),
+                  child: Form(
+                    key: _formKey,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        const SizedBox(height: 10),
+
+                        // Icono de jurado personalizado
+                        Center(
+                          child: Container(
+                            padding: const EdgeInsets.all(20),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              shape: BoxShape.circle,
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withOpacity(0.1),
+                                  blurRadius: 15,
+                                  offset: const Offset(0, 5),
+                                ),
+                              ],
+                            ),
+                            child: Image.asset(
+                              'assets/icons/jurado.png',
+                              width: 70,
+                              height: 70,
+                              errorBuilder: (context, error, stackTrace) {
+                                return const Icon(
+                                  Icons.gavel,
+                                  size: 70,
+                                  color: Color(0xFF1A5490),
+                                );
+                              },
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 30),
+
+                        // Nombre completo
+                        TextFormField(
+                          controller: _nombreController,
+                          style: const TextStyle(fontSize: 15),
+                          decoration: InputDecoration(
+                            labelText: 'Nombre Completo',
+                            hintText: 'Ej: Dr. Juan Pérez López',
+                            hintStyle: TextStyle(
+                              color: Colors.grey[400],
+                              fontSize: 14,
+                            ),
+                            prefixIcon: const Icon(
+                              Icons.person,
+                              color: Color(0xFF1A5490),
+                            ),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(color: Colors.grey[300]!),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(
+                                color: Colors.grey[300]!,
+                                width: 1.5,
+                              ),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: const BorderSide(
+                                color: Color(0xFF1A5490),
+                                width: 2,
+                              ),
+                            ),
+                            filled: true,
+                            fillColor: Colors.white,
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 18,
+                            ),
+                          ),
+                          textCapitalization: TextCapitalization.words,
+                          validator: (value) {
+                            if (value == null || value.trim().isEmpty) {
+                              return 'Por favor ingrese el nombre completo';
+                            }
+                            if (value.trim().length < 3) {
+                              return 'El nombre debe tener al menos 3 caracteres';
+                            }
+                            return null;
+                          },
+                        ),
+                        const SizedBox(height: 18),
+
+                        // Usuario
+                        TextFormField(
+                          controller: _usuarioController,
+                          style: const TextStyle(fontSize: 15),
+                          decoration: InputDecoration(
+                            labelText: 'Usuario',
+                            hintText: 'Ej: jperez',
+                            hintStyle: TextStyle(
+                              color: Colors.grey[400],
+                              fontSize: 14,
+                            ),
+                            prefixIcon: const Icon(
+                              Icons.account_circle,
+                              color: Color(0xFF1A5490),
+                            ),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(color: Colors.grey[300]!),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(
+                                color: Colors.grey[300]!,
+                                width: 1.5,
+                              ),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: const BorderSide(
+                                color: Color(0xFF1A5490),
+                                width: 2,
+                              ),
+                            ),
+                            filled: true,
+                            fillColor: Colors.white,
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 18,
+                            ),
+                          ),
+                          autocorrect: false,
+                          validator: (value) {
+                            if (value == null || value.trim().isEmpty) {
+                              return 'Por favor ingrese el usuario';
+                            }
+                            if (value.trim().length < 3) {
+                              return 'El usuario debe tener al menos 3 caracteres';
+                            }
+                            return null;
+                          },
+                        ),
+                        const SizedBox(height: 18),
+
+                        // Contraseña
+                        TextFormField(
+                          controller: _passwordController,
+                          style: const TextStyle(fontSize: 15),
+                          decoration: InputDecoration(
+                            labelText: 'Contraseña',
+                            hintText: 'Mínimo 6 caracteres',
+                            hintStyle: TextStyle(
+                              color: Colors.grey[400],
+                              fontSize: 14,
+                            ),
+                            prefixIcon: const Icon(
+                              Icons.lock,
+                              color: Color(0xFF1A5490),
+                            ),
+                            suffixIcon: IconButton(
+                              icon: Icon(
+                                _obscurePassword
+                                    ? Icons.visibility_off
+                                    : Icons.visibility,
+                                color: Colors.grey[600],
+                              ),
+                              onPressed: () {
+                                setState(() {
+                                  _obscurePassword = !_obscurePassword;
+                                });
+                              },
+                            ),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(color: Colors.grey[300]!),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(
+                                color: Colors.grey[300]!,
+                                width: 1.5,
+                              ),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: const BorderSide(
+                                color: Color(0xFF1A5490),
+                                width: 2,
+                              ),
+                            ),
+                            filled: true,
+                            fillColor: Colors.white,
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 18,
+                            ),
+                          ),
+                          obscureText: _obscurePassword,
+                          validator: (value) {
+                            if (value == null || value.isEmpty) {
+                              return 'Por favor ingrese una contraseña';
+                            }
+                            if (value.length < 6) {
+                              return 'La contraseña debe tener al menos 6 caracteres';
+                            }
+                            return null;
+                          },
+                        ),
+                        const SizedBox(height: 18),
+
+                        // Facultad - MEJORADO
+                        DropdownButtonFormField<String>(
+                          value: _facultadSeleccionada,
+                          isExpanded: true,
+                          icon: Icon(
+                            Icons.arrow_drop_down,
+                            color: Colors.grey[600],
+                          ),
+                          style: const TextStyle(
+                            fontSize: 15,
+                            color: Colors.black87,
+                          ),
+                          decoration: InputDecoration(
+                            labelText: 'Facultad',
+                            prefixIcon: const Icon(
+                              Icons.school,
+                              color: Color(0xFF1A5490),
+                            ),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(color: Colors.grey[300]!),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(
+                                color: Colors.grey[300]!,
+                                width: 1.5,
+                              ),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: const BorderSide(
+                                color: Color(0xFF1A5490),
+                                width: 2,
+                              ),
+                            ),
+                            filled: true,
+                            fillColor: Colors.white,
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 18,
+                            ),
+                          ),
+                          selectedItemBuilder: (BuildContext context) {
+                            return _facultades.map((String value) {
+                              return Align(
+                                alignment: Alignment.centerLeft,
+                                child: Text(
+                                  value,
+                                  overflow: TextOverflow.ellipsis,
+                                  maxLines: 1,
+                                  style: const TextStyle(
+                                    fontSize: 15,
+                                    color: Colors.black87,
+                                  ),
+                                ),
+                              );
+                            }).toList();
+                          },
+                          items: _facultades.map((facultad) {
+                            return DropdownMenuItem(
+                              value: facultad,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 12,
+                                  horizontal: 8,
+                                ),
+                                decoration: BoxDecoration(
+                                  border: Border(
+                                    bottom: BorderSide(
+                                      color: Colors.grey[200]!,
+                                      width: 1,
+                                    ),
+                                  ),
+                                ),
+                                child: Text(
+                                  facultad,
+                                  style: const TextStyle(
+                                    fontSize: 14.5,
+                                    height: 1.4,
+                                  ),
+                                ),
+                              ),
+                            );
+                          }).toList(),
+                          onChanged: _onFacultadChanged,
+                          validator: (value) {
+                            if (value == null || value.isEmpty) {
+                              return 'Por favor seleccione una facultad';
+                            }
+                            return null;
+                          },
+                          menuMaxHeight: 300,
+                          dropdownColor: Colors.white,
+                        ),
+                        const SizedBox(height: 18),
+
+                        // Carrera - MEJORADO
+                        DropdownButtonFormField<String>(
+                          value: _carreraSeleccionada,
+                          isExpanded: true,
+                          icon: Icon(
+                            Icons.arrow_drop_down,
+                            color: Colors.grey[600],
+                          ),
+                          style: const TextStyle(
+                            fontSize: 15,
+                            color: Colors.black87,
+                          ),
+                          decoration: InputDecoration(
+                            labelText: 'Carrera',
+                            prefixIcon: const Icon(
+                              Icons.book,
+                              color: Color(0xFF1A5490),
+                            ),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(color: Colors.grey[300]!),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(
+                                color: Colors.grey[300]!,
+                                width: 1.5,
+                              ),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: const BorderSide(
+                                color: Color(0xFF1A5490),
+                                width: 2,
+                              ),
+                            ),
+                            filled: true,
+                            fillColor: Colors.white,
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 18,
+                            ),
+                          ),
+                          selectedItemBuilder: (BuildContext context) {
+                            return _carrerasDisponibles.map((String value) {
+                              return Align(
+                                alignment: Alignment.centerLeft,
+                                child: Text(
+                                  value,
+                                  overflow: TextOverflow.ellipsis,
+                                  maxLines: 1,
+                                  style: const TextStyle(
+                                    fontSize: 15,
+                                    color: Colors.black87,
+                                  ),
+                                ),
+                              );
+                            }).toList();
+                          },
+                          items: _carrerasDisponibles.map((carrera) {
+                            return DropdownMenuItem(
+                              value: carrera,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 12,
+                                  horizontal: 8,
+                                ),
+                                decoration: BoxDecoration(
+                                  border: Border(
+                                    bottom: BorderSide(
+                                      color: Colors.grey[200]!,
+                                      width: 1,
+                                    ),
+                                  ),
+                                ),
+                                child: Text(
+                                  carrera,
+                                  style: const TextStyle(
+                                    fontSize: 14.5,
+                                    height: 1.4,
+                                  ),
+                                ),
+                              ),
+                            );
+                          }).toList(),
+                          onChanged: _facultadSeleccionada == null
+                              ? null
+                              : _onCarreraChanged,
+                          validator: (value) {
+                            if (value == null || value.isEmpty) {
+                              return 'Por favor seleccione una carrera';
+                            }
+                            return null;
+                          },
+                          menuMaxHeight: 300,
+                          dropdownColor: Colors.white,
+                        ),
+                        const SizedBox(height: 18),
+
+                        // Categoría - MEJORADO
+                        DropdownButtonFormField<String>(
+                          value: _categoriaSeleccionada,
+                          isExpanded: true,
+                          icon: Icon(
+                            Icons.arrow_drop_down,
+                            color: Colors.grey[600],
+                          ),
+                          style: const TextStyle(
+                            fontSize: 15,
+                            color: Colors.black87,
+                          ),
+                          decoration: InputDecoration(
+                            labelText: 'Categoría / Proyecto',
+                            prefixIcon: const Icon(
+                              Icons.category,
+                              color: Color(0xFF1A5490),
+                            ),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(color: Colors.grey[300]!),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(
+                                color: Colors.grey[300]!,
+                                width: 1.5,
+                              ),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: const BorderSide(
+                                color: Color(0xFF1A5490),
+                                width: 2,
+                              ),
+                            ),
+                            filled: true,
+                            fillColor: Colors.white,
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 18,
+                            ),
+                          ),
+                          hint: Text(
+                            _carreraSeleccionada == null
+                                ? 'Seleccione una carrera primero'
+                                : 'Seleccione una categoría',
+                            style: TextStyle(
+                              color: Colors.grey[400],
+                              fontSize: 14,
+                            ),
+                          ),
+                          selectedItemBuilder: (BuildContext context) {
+                            return _categoriasDisponibles.map((String value) {
+                              return Align(
+                                alignment: Alignment.centerLeft,
+                                child: Text(
+                                  value,
+                                  overflow: TextOverflow.ellipsis,
+                                  maxLines: 1,
+                                  style: const TextStyle(
+                                    fontSize: 15,
+                                    color: Colors.black87,
+                                  ),
+                                ),
+                              );
+                            }).toList();
+                          },
+                          items: _categoriasDisponibles.isEmpty
+                              ? null
+                              : _categoriasDisponibles.map((categoria) {
+                                  return DropdownMenuItem(
+                                    value: categoria,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 12,
+                                        horizontal: 8,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        border: Border(
+                                          bottom: BorderSide(
+                                            color: Colors.grey[200]!,
+                                            width: 1,
+                                          ),
+                                        ),
+                                      ),
+                                      child: Text(
+                                        categoria,
+                                        style: const TextStyle(
+                                          fontSize: 14.5,
+                                          height: 1.4,
+                                        ),
+                                      ),
+                                    ),
+                                  );
+                                }).toList(),
+                          onChanged: _categoriasDisponibles.isEmpty
+                              ? null
+                              : (value) {
+                                  setState(() {
+                                    _categoriaSeleccionada = value;
+                                  });
+                                },
+                          validator: (value) {
+                            if (value == null || value.isEmpty) {
+                              return 'Por favor seleccione una categoría';
+                            }
+                            return null;
+                          },
+                          menuMaxHeight: 300,
+                          dropdownColor: Colors.white,
+                        ),
+
+                        // Indicador de carga para categorías
+                        if (_carreraSeleccionada != null &&
+                            _categoriasDisponibles.isEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 8.0, left: 4),
+                            child: Row(
+                              children: [
+                                SizedBox(
+                                  width: 14,
+                                  height: 14,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.grey[600],
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  'Cargando categorías...',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.grey[600],
+                                    fontStyle: FontStyle.italic,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+
+                        const SizedBox(height: 30),
+
+                        // Botón crear
+                        ElevatedButton(
+                          onPressed: _isLoading ? null : _crearJurado,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF1A5490),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 18),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(15),
+                            ),
+                            elevation: 4,
+                            shadowColor: const Color(
+                              0xFF1A5490,
+                            ).withOpacity(0.4),
+                          ),
+                          child: _isLoading
+                              ? const SizedBox(
+                                  height: 22,
+                                  width: 22,
+                                  child: CircularProgressIndicator(
+                                    color: Colors.white,
+                                    strokeWidth: 2.5,
+                                  ),
+                                )
+                              : const Text(
+                                  'Crear Jurado',
+                                  style: TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold,
+                                    letterSpacing: 0.5,
+                                  ),
+                                ),
+                        ),
+
+                        const SizedBox(height: 20),
+
+                        // Información adicional
+                        Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: Colors.blue.shade50,
+                            borderRadius: BorderRadius.circular(15),
+                            border: Border.all(
+                              color: Colors.blue.shade200,
+                              width: 1.5,
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.info_outline,
+                                color: Colors.blue.shade700,
+                                size: 22,
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  'El jurado evaluará solo proyectos de la categoría seleccionada',
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    color: Colors.blue.shade900,
+                                    height: 1.3,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}

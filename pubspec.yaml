@@ -1,0 +1,44 @@
+name: eventos
+description: "Sistema de Gestión de Eventos UPEU"
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.8.1
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  firebase_core: ^3.8.1
+  firebase_auth: ^5.3.3
+  cloud_firestore: ^5.5.2
+  shared_preferences: ^2.2.2
+  intl: ^0.20.2
+  qr_flutter: ^4.1.0
+  mobile_scanner: ^3.5.6
+  file_picker: ^8.1.2
+  excel: ^4.0.3
+  app_links: ^3.4.3
+  path_provider: ^2.1.1
+  permission_handler: ^11.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+  flutter_launcher_icons: ^0.13.1
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/icons/
+    - assets/images/
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/images/logo_upeu.png"
+  adaptive_icon_background: "#FFFFFF"
+  adaptive_icon_foreground: "assets/images/logo_upeu.png"

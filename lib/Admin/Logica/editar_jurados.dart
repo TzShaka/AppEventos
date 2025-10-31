@@ -1,0 +1,842 @@
+import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+
+class EditarJuradosScreen extends StatefulWidget {
+  const EditarJuradosScreen({super.key});
+
+  @override
+  State<EditarJuradosScreen> createState() => _EditarJuradosScreenState();
+}
+
+class _EditarJuradosScreenState extends State<EditarJuradosScreen> {
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+
+  String? _facultadSeleccionada;
+  String? _carreraSeleccionada;
+
+  List<String> _facultades = [];
+  List<String> _carrerasDisponibles = [];
+  List<Map<String, dynamic>> _jurados = [];
+
+  bool _isLoadingFacultades = true;
+  bool _isLoadingJurados = false;
+
+  Map<String, Set<String>> _carrerasPorFacultad = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _cargarFacultades();
+  }
+
+  Future<void> _cargarFacultades() async {
+    setState(() {
+      _isLoadingFacultades = true;
+    });
+
+    try {
+      final eventsSnapshot = await _firestore.collection('events').get();
+
+      final Set<String> facultadesSet = {};
+      final Map<String, Set<String>> carrerasMap = {};
+
+      for (var doc in eventsSnapshot.docs) {
+        final data = doc.data();
+        final facultad = data['facultad'] as String?;
+        final carrera = data['carrera'] as String?;
+
+        if (facultad != null && facultad.isNotEmpty) {
+          facultadesSet.add(facultad);
+
+          if (carrera != null && carrera.isNotEmpty) {
+            if (!carrerasMap.containsKey(facultad)) {
+              carrerasMap[facultad] = {};
+            }
+            carrerasMap[facultad]!.add(carrera);
+          }
+        }
+      }
+
+      if (mounted) {
+        setState(() {
+          _facultades = facultadesSet.toList()..sort();
+          _carrerasPorFacultad = carrerasMap;
+          _isLoadingFacultades = false;
+        });
+      }
+    } catch (e) {
+      print('Error al cargar facultades: $e');
+      if (mounted) {
+        setState(() {
+          _isLoadingFacultades = false;
+        });
+      }
+    }
+  }
+
+  void _onFacultadChanged(String? facultad) {
+    setState(() {
+      _facultadSeleccionada = facultad;
+      _carreraSeleccionada = null;
+      _jurados = [];
+
+      if (facultad != null && _carrerasPorFacultad.containsKey(facultad)) {
+        _carrerasDisponibles = _carrerasPorFacultad[facultad]!.toList()..sort();
+      } else {
+        _carrerasDisponibles = [];
+      }
+    });
+  }
+
+  Future<void> _onCarreraChanged(String? carrera) async {
+    setState(() {
+      _carreraSeleccionada = carrera;
+      _jurados = [];
+    });
+
+    if (carrera != null && _facultadSeleccionada != null) {
+      await _cargarJurados();
+    }
+  }
+
+  Future<void> _cargarJurados() async {
+    if (_facultadSeleccionada == null || _carreraSeleccionada == null) return;
+
+    setState(() {
+      _isLoadingJurados = true;
+    });
+
+    try {
+      // CAMBIO: Buscar en 'users' con userType 'jurado' en lugar de colección 'jurados'
+      final juradosSnapshot = await _firestore
+          .collection('users')
+          .where('userType', isEqualTo: 'jurado')
+          .where('facultad', isEqualTo: _facultadSeleccionada)
+          .get();
+
+      final List<Map<String, dynamic>> juradosList = [];
+
+      // Filtrar por carrera en el código
+      for (var doc in juradosSnapshot.docs) {
+        final data = doc.data();
+
+        // Solo agregar si la carrera coincide
+        if (data['carrera'] == _carreraSeleccionada) {
+          juradosList.add({
+            'id': doc.id,
+            'nombre': data['name'] ?? '',
+            'usuario': data['usuario'] ?? '',
+            'password': data['password'] ?? '',
+            'facultad': data['facultad'] ?? '',
+            'carrera': data['carrera'] ?? '',
+            'categoria': data['categoria'] ?? '',
+          });
+        }
+      }
+
+      if (mounted) {
+        setState(() {
+          _jurados = juradosList;
+          _isLoadingJurados = false;
+        });
+
+        if (juradosList.isEmpty) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('No se encontraron jurados para estos filtros'),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 2),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      print('Error al cargar jurados: $e');
+      if (mounted) {
+        setState(() {
+          _isLoadingJurados = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error al cargar jurados: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  void _mostrarDialogoEditar(Map<String, dynamic> jurado) {
+    final nombreController = TextEditingController(text: jurado['nombre']);
+    final usuarioController = TextEditingController(text: jurado['usuario']);
+    final passwordController = TextEditingController(text: jurado['password']);
+    String categoriaSeleccionada = jurado['categoria'];
+
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
+          title: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1A5490).withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(
+                  Icons.edit,
+                  color: Color(0xFF1A5490),
+                  size: 24,
+                ),
+              ),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Text(
+                  'Editar Jurado',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          ),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: nombreController,
+                  decoration: InputDecoration(
+                    labelText: 'Nombre Completo',
+                    prefixIcon: const Icon(
+                      Icons.person,
+                      color: Color(0xFF1A5490),
+                    ),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(
+                        color: Color(0xFF1A5490),
+                        width: 2,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: usuarioController,
+                  decoration: InputDecoration(
+                    labelText: 'Usuario',
+                    prefixIcon: const Icon(
+                      Icons.account_circle,
+                      color: Color(0xFF1A5490),
+                    ),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(
+                        color: Color(0xFF1A5490),
+                        width: 2,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: passwordController,
+                  decoration: InputDecoration(
+                    labelText: 'Contraseña',
+                    prefixIcon: const Icon(
+                      Icons.lock,
+                      color: Color(0xFF1A5490),
+                    ),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(
+                        color: Color(0xFF1A5490),
+                        width: 2,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                StreamBuilder<QuerySnapshot>(
+                  stream: _firestore
+                      .collection('events')
+                      .where('facultad', isEqualTo: _facultadSeleccionada)
+                      .where('carrera', isEqualTo: _carreraSeleccionada)
+                      .snapshots(),
+                  builder: (context, snapshot) {
+                    if (!snapshot.hasData) {
+                      return const CircularProgressIndicator();
+                    }
+
+                    Set<String> categorias = {};
+                    for (var eventDoc in snapshot.data!.docs) {
+                      _firestore
+                          .collection('events')
+                          .doc(eventDoc.id)
+                          .collection('proyectos')
+                          .get()
+                          .then((proyectos) {
+                            for (var proyecto in proyectos.docs) {
+                              final clasificacion = proyecto
+                                  .data()['Clasificación'];
+                              if (clasificacion != null) {
+                                categorias.add(clasificacion);
+                              }
+                            }
+                          });
+                    }
+
+                    return FutureBuilder<List<String>>(
+                      future: _obtenerCategorias(),
+                      builder: (context, catSnapshot) {
+                        if (!catSnapshot.hasData) {
+                          return const CircularProgressIndicator();
+                        }
+
+                        return DropdownButtonFormField<String>(
+                          value: categoriaSeleccionada,
+                          decoration: InputDecoration(
+                            labelText: 'Categoría',
+                            prefixIcon: const Icon(
+                              Icons.category,
+                              color: Color(0xFF1A5490),
+                            ),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: const BorderSide(
+                                color: Color(0xFF1A5490),
+                                width: 2,
+                              ),
+                            ),
+                          ),
+                          items: catSnapshot.data!.map((cat) {
+                            return DropdownMenuItem(
+                              value: cat,
+                              child: Text(cat),
+                            );
+                          }).toList(),
+                          onChanged: (value) {
+                            setDialogState(() {
+                              categoriaSeleccionada = value!;
+                            });
+                          },
+                        );
+                      },
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text(
+                'Cancelar',
+                style: TextStyle(color: Colors.grey),
+              ),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                await _actualizarJurado(
+                  jurado['id'],
+                  nombreController.text,
+                  usuarioController.text,
+                  passwordController.text,
+                  categoriaSeleccionada,
+                );
+                if (mounted) {
+                  Navigator.pop(context);
+                }
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF1A5490),
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 24,
+                  vertical: 12,
+                ),
+              ),
+              child: const Text('Guardar'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<List<String>> _obtenerCategorias() async {
+    try {
+      final eventsSnapshot = await _firestore
+          .collection('events')
+          .where('facultad', isEqualTo: _facultadSeleccionada)
+          .where('carrera', isEqualTo: _carreraSeleccionada)
+          .get();
+
+      final Set<String> categoriasSet = {};
+
+      for (var eventDoc in eventsSnapshot.docs) {
+        final proyectosSnapshot = await _firestore
+            .collection('events')
+            .doc(eventDoc.id)
+            .collection('proyectos')
+            .get();
+
+        for (var proyectoDoc in proyectosSnapshot.docs) {
+          final data = proyectoDoc.data();
+          final clasificacion = data['Clasificación'] as String?;
+
+          if (clasificacion != null && clasificacion.isNotEmpty) {
+            categoriasSet.add(clasificacion);
+          }
+        }
+      }
+
+      return categoriasSet.toList()..sort();
+    } catch (e) {
+      print('Error al obtener categorías: $e');
+      return [];
+    }
+  }
+
+  Future<void> _actualizarJurado(
+    String id,
+    String nombre,
+    String usuario,
+    String password,
+    String categoria,
+  ) async {
+    try {
+      // CAMBIO: Actualizar en 'users' en lugar de 'jurados'
+      await _firestore.collection('users').doc(id).update({
+        'name': nombre,
+        'usuario': usuario,
+        'password': password,
+        'categoria': categoria,
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Jurado actualizado exitosamente'),
+            backgroundColor: Colors.green,
+          ),
+        );
+        await _cargarJurados();
+      }
+    } catch (e) {
+      print('Error al actualizar jurado: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error al actualizar: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _eliminarJurado(String id, String nombre) async {
+    final confirmar = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.red.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Icon(
+                Icons.warning_rounded,
+                color: Colors.red,
+                size: 24,
+              ),
+            ),
+            const SizedBox(width: 12),
+            const Expanded(
+              child: Text(
+                'Confirmar Eliminación',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        ),
+        content: Text(
+          '¿Está seguro de eliminar al jurado "$nombre"?\n\nEsta acción no se puede deshacer.',
+          style: const TextStyle(fontSize: 15),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancelar', style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+            child: const Text('Eliminar'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmar == true) {
+      try {
+        // CAMBIO: Eliminar de 'users' en lugar de 'jurados'
+        await _firestore.collection('users').doc(id).delete();
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Jurado eliminado exitosamente'),
+              backgroundColor: Colors.green,
+            ),
+          );
+          await _cargarJurados();
+        }
+      } catch (e) {
+        print('Error al eliminar jurado: $e');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Error al eliminar: $e'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF1E3A5F),
+      body: SafeArea(
+        child: Column(
+          children: [
+            // Header
+            Padding(
+              padding: const EdgeInsets.all(20.0),
+              child: Row(
+                children: [
+                  IconButton(
+                    icon: const Icon(
+                      Icons.arrow_back,
+                      color: Colors.white,
+                      size: 28,
+                    ),
+                    onPressed: () => Navigator.pop(context),
+                    tooltip: 'Regresar',
+                  ),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'Ver y Editar Jurados',
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            // Content Area
+            Expanded(
+              child: Container(
+                decoration: const BoxDecoration(
+                  color: Color(0xFFE8EDF2),
+                  borderRadius: BorderRadius.only(
+                    topLeft: Radius.circular(30),
+                    topRight: Radius.circular(30),
+                  ),
+                ),
+                child: Column(
+                  children: [
+                    // Filtros
+                    Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        children: [
+                          // Icono
+                          Container(
+                            padding: const EdgeInsets.all(16),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              shape: BoxShape.circle,
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withOpacity(0.1),
+                                  blurRadius: 15,
+                                  offset: const Offset(0, 5),
+                                ),
+                              ],
+                            ),
+                            child: const Icon(
+                              Icons.filter_list,
+                              size: 40,
+                              color: Color(0xFF1A5490),
+                            ),
+                          ),
+                          const SizedBox(height: 24),
+
+                          // Facultad
+                          DropdownButtonFormField<String>(
+                            value: _facultadSeleccionada,
+                            isExpanded: true,
+                            decoration: InputDecoration(
+                              labelText: 'Facultad',
+                              prefixIcon: const Icon(
+                                Icons.school,
+                                color: Color(0xFF1A5490),
+                              ),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(15),
+                              ),
+                              enabledBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(15),
+                                borderSide: BorderSide(
+                                  color: Colors.grey[300]!,
+                                  width: 1.5,
+                                ),
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(15),
+                                borderSide: const BorderSide(
+                                  color: Color(0xFF1A5490),
+                                  width: 2,
+                                ),
+                              ),
+                              filled: true,
+                              fillColor: Colors.white,
+                            ),
+                            selectedItemBuilder: (context) {
+                              return _facultades.map((value) {
+                                return Text(
+                                  value,
+                                  overflow: TextOverflow.ellipsis,
+                                );
+                              }).toList();
+                            },
+                            items: _facultades.map((facultad) {
+                              return DropdownMenuItem(
+                                value: facultad,
+                                child: Text(facultad),
+                              );
+                            }).toList(),
+                            onChanged: _onFacultadChanged,
+                            menuMaxHeight: 300,
+                          ),
+                          const SizedBox(height: 16),
+
+                          // Carrera
+                          DropdownButtonFormField<String>(
+                            value: _carreraSeleccionada,
+                            isExpanded: true,
+                            decoration: InputDecoration(
+                              labelText: 'Carrera',
+                              prefixIcon: const Icon(
+                                Icons.book,
+                                color: Color(0xFF1A5490),
+                              ),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(15),
+                              ),
+                              enabledBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(15),
+                                borderSide: BorderSide(
+                                  color: Colors.grey[300]!,
+                                  width: 1.5,
+                                ),
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(15),
+                                borderSide: const BorderSide(
+                                  color: Color(0xFF1A5490),
+                                  width: 2,
+                                ),
+                              ),
+                              filled: true,
+                              fillColor: Colors.white,
+                            ),
+                            selectedItemBuilder: (context) {
+                              return _carrerasDisponibles.map((value) {
+                                return Text(
+                                  value,
+                                  overflow: TextOverflow.ellipsis,
+                                );
+                              }).toList();
+                            },
+                            items: _carrerasDisponibles.map((carrera) {
+                              return DropdownMenuItem(
+                                value: carrera,
+                                child: Text(carrera),
+                              );
+                            }).toList(),
+                            onChanged: _facultadSeleccionada == null
+                                ? null
+                                : _onCarreraChanged,
+                            menuMaxHeight: 300,
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    // Lista de Jurados
+                    Expanded(
+                      child: _isLoadingJurados
+                          ? const Center(
+                              child: CircularProgressIndicator(
+                                color: Color(0xFF1A5490),
+                              ),
+                            )
+                          : _jurados.isEmpty
+                          ? Center(
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    Icons.search_off,
+                                    size: 80,
+                                    color: Colors.grey[400],
+                                  ),
+                                  const SizedBox(height: 16),
+                                  Text(
+                                    _facultadSeleccionada == null ||
+                                            _carreraSeleccionada == null
+                                        ? 'Seleccione facultad y carrera'
+                                        : 'No hay jurados registrados',
+                                    style: TextStyle(
+                                      fontSize: 16,
+                                      color: Colors.grey[600],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            )
+                          : ListView.builder(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 24,
+                                vertical: 8,
+                              ),
+                              itemCount: _jurados.length,
+                              itemBuilder: (context, index) {
+                                final jurado = _jurados[index];
+                                return Card(
+                                  margin: const EdgeInsets.only(bottom: 12),
+                                  elevation: 3,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(15),
+                                  ),
+                                  child: ListTile(
+                                    contentPadding: const EdgeInsets.all(16),
+                                    leading: CircleAvatar(
+                                      backgroundColor: const Color(0xFF1A5490),
+                                      radius: 28,
+                                      child: Text(
+                                        jurado['nombre'][0].toUpperCase(),
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 24,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ),
+                                    title: Text(
+                                      jurado['nombre'],
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 16,
+                                      ),
+                                    ),
+                                    subtitle: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          'Usuario: ${jurado['usuario']}',
+                                          style: TextStyle(
+                                            color: Colors.grey[700],
+                                            fontSize: 14,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          'Categoría: ${jurado['categoria']}',
+                                          style: TextStyle(
+                                            color: Colors.grey[600],
+                                            fontSize: 13,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    trailing: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        IconButton(
+                                          icon: const Icon(
+                                            Icons.edit,
+                                            color: Color(0xFF1A5490),
+                                          ),
+                                          onPressed: () =>
+                                              _mostrarDialogoEditar(jurado),
+                                          tooltip: 'Editar',
+                                        ),
+                                        IconButton(
+                                          icon: const Icon(
+                                            Icons.delete,
+                                            color: Colors.red,
+                                          ),
+                                          onPressed: () => _eliminarJurado(
+                                            jurado['id'],
+                                            jurado['nombre'],
+                                          ),
+                                          tooltip: 'Eliminar',
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}

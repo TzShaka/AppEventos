@@ -1,0 +1,1364 @@
+import 'package:flutter/material.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:excel/excel.dart' as excel_pkg;
+import 'dart:io';
+import 'package:cloud_firestore/cloud_firestore.dart';
+
+class DatosExcelScreen extends StatefulWidget {
+  const DatosExcelScreen({super.key});
+
+  @override
+  State<DatosExcelScreen> createState() => _DatosExcelScreenState();
+}
+
+class _DatosExcelScreenState extends State<DatosExcelScreen>
+    with SingleTickerProviderStateMixin {
+  bool _isLoading = false;
+  bool _fileSelected = false;
+  String? _fileName;
+  List<Map<String, dynamic>> _previewData = [];
+  List<Map<String, dynamic>> _allData = [];
+  int _totalRows = 0;
+  int _successCount = 0;
+  int _errorCount = 0;
+  int _currentProgress = 0;
+  List<String> _errors = [];
+
+  late AnimationController _animationController;
+  late Animation<double> _fadeAnimation;
+  late Animation<Offset> _slideAnimation;
+
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+
+  static const int BATCH_SIZE = 500;
+
+  final Map<String, String> _columnMapping = {
+    'Modo contrato': 'modoContrato',
+    'Modalidad estudio': 'modalidadEstudio',
+    'Sede': 'sede',
+    'Unidad académica': 'facultad',
+    'Programa estudio': 'carrera',
+    'Ciclo': 'ciclo',
+    'Grupo': 'grupo',
+    'id_persona': 'idPersona',
+    'Código estudiante': 'codigoUniversitario',
+    'Estudiante': 'name',
+    'Documento': 'dni',
+    'Correo': 'email',
+    'Usuario': 'username',
+    'Correo Institucional': 'correoInstitucional',
+    'Celular': 'celular',
+  };
+
+  @override
+  void initState() {
+    super.initState();
+    _animationController = AnimationController(
+      duration: const Duration(milliseconds: 600),
+      vsync: this,
+    );
+
+    _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(parent: _animationController, curve: Curves.easeInOut),
+    );
+
+    _slideAnimation =
+        Tween<Offset>(begin: const Offset(0, 0.3), end: Offset.zero).animate(
+          CurvedAnimation(
+            parent: _animationController,
+            curve: Curves.easeOutCubic,
+          ),
+        );
+
+    _animationController.forward();
+  }
+
+  @override
+  void dispose() {
+    _animationController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickExcelFile() async {
+    try {
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['xlsx', 'xls'],
+      );
+
+      if (result != null) {
+        setState(() {
+          _isLoading = true;
+          _fileName = result.files.single.name;
+          _errors.clear();
+          _successCount = 0;
+          _errorCount = 0;
+          _currentProgress = 0;
+        });
+
+        File file = File(result.files.single.path!);
+        await _readExcelFile(file);
+
+        setState(() {
+          _fileSelected = true;
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _isLoading = false;
+      });
+      _showMessage('Error al seleccionar archivo: $e');
+    }
+  }
+
+  Future<void> _readExcelFile(File file) async {
+    try {
+      var bytes = file.readAsBytesSync();
+      var excelFile = excel_pkg.Excel.decodeBytes(bytes);
+
+      var sheet = excelFile.tables.keys.first;
+      var table = excelFile.tables[sheet];
+
+      if (table == null || table.rows.isEmpty) {
+        _showMessage('El archivo Excel está vacío');
+        return;
+      }
+
+      List<String?> headers = table.rows.first
+          .map((cell) => cell?.value?.toString().trim())
+          .toList();
+
+      if (!_validateHeaders(headers)) {
+        return;
+      }
+
+      _allData.clear();
+      for (int i = 1; i < table.rows.length; i++) {
+        var row = table.rows[i];
+        Map<String, dynamic> rowData = {};
+
+        bool hasAnyData = false;
+
+        for (int j = 0; j < headers.length; j++) {
+          if (j < row.length) {
+            String? header = headers[j];
+            if (header != null && _columnMapping.containsKey(header)) {
+              String fieldName = _columnMapping[header]!;
+              var cellValue = row[j]?.value;
+
+              String? value;
+              if (cellValue != null) {
+                if (cellValue is int || cellValue is double) {
+                  value = cellValue.toString();
+                } else {
+                  value = cellValue.toString().trim();
+                }
+
+                if (value.isNotEmpty) {
+                  hasAnyData = true;
+                  rowData[fieldName] = value;
+                }
+              }
+            }
+          }
+        }
+
+        if (hasAnyData &&
+            (rowData.containsKey('name') || rowData.containsKey('dni'))) {
+          _allData.add(rowData);
+        }
+      }
+
+      _totalRows = _allData.length;
+      _previewData = _allData.take(5).toList();
+
+      if (_totalRows == 0) {
+        _showMessage('No se encontraron datos válidos en el archivo');
+      } else {
+        _showMessage('✅ Se encontraron $_totalRows estudiantes para importar');
+      }
+    } catch (e) {
+      _showMessage('Error al leer el archivo Excel: $e');
+      print('Error detallado: $e');
+    }
+  }
+
+  bool _validateHeaders(List<String?> headers) {
+    List<String> requiredColumns = ['Estudiante', 'Documento'];
+    bool hasAtLeastOne = requiredColumns.any((col) => headers.contains(col));
+
+    if (!hasAtLeastOne) {
+      _showMessage(
+        'El archivo debe tener al menos la columna "Estudiante" o "Documento"',
+      );
+      return false;
+    }
+    return true;
+  }
+
+  Future<void> _importData() async {
+    if (_allData.isEmpty) {
+      _showMessage('No hay datos para importar');
+      return;
+    }
+
+    bool? confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E3A5F).withOpacity(0.1),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Icon(Icons.rocket_launch, color: Color(0xFF1E3A5F)),
+            ),
+            const SizedBox(width: 12),
+            const Expanded(
+              child: Text(
+                'Confirmar Importación',
+                style: TextStyle(
+                  color: Color(0xFF1E3A5F),
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '¿Deseas importar $_totalRows estudiantes?',
+              style: const TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF1E3A5F),
+              ),
+            ),
+            const SizedBox(height: 16),
+            _buildFeatureItem('Importación ULTRA RÁPIDA'),
+            _buildFeatureItem('Acepta celdas vacías'),
+            _buildFeatureItem('Omite duplicados automáticamente'),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.orange.shade50,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.orange.shade200),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.info_outline,
+                    color: Colors.orange.shade700,
+                    size: 20,
+                  ),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'Puede tardar 30-60 segundos para 100+ estudiantes',
+                      style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            style: TextButton.styleFrom(
+              foregroundColor: const Color(0xFF64748B),
+            ),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF1E3A5F),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+            ),
+            child: const Text('Importar'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+
+    setState(() {
+      _isLoading = true;
+      _successCount = 0;
+      _errorCount = 0;
+      _currentProgress = 0;
+      _errors.clear();
+    });
+
+    await _processBatchImport();
+
+    setState(() {
+      _isLoading = false;
+    });
+
+    _showResultsDialog();
+  }
+
+  Widget _buildFeatureItem(String text) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        children: [
+          Container(
+            width: 6,
+            height: 6,
+            decoration: const BoxDecoration(
+              color: Color(0xFF1E3A5F),
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            text,
+            style: const TextStyle(fontSize: 14, color: Color(0xFF64748B)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _processBatchImport() async {
+    final existingUsers = await _getAllExistingUsers();
+    List<Map<String, dynamic>> validStudents = [];
+
+    for (int i = 0; i < _allData.length; i++) {
+      var studentData = _allData[i];
+      final preparedData = _prepareStudentData(studentData, i);
+      final isDuplicate = _checkDuplicate(preparedData, existingUsers);
+
+      if (isDuplicate) {
+        _errorCount++;
+        _errors.add(
+          'Fila ${i + 2}: ${preparedData['name']} - Ya existe (DNI: ${preparedData['dni']})',
+        );
+      } else {
+        validStudents.add(preparedData);
+      }
+
+      setState(() {
+        _currentProgress = i + 1;
+      });
+    }
+
+    await _batchWriteToFirestore(validStudents);
+  }
+
+  Future<Set<Map<String, String>>> _getAllExistingUsers() async {
+    try {
+      final snapshot = await _firestore
+          .collection('users')
+          .where('userType', isEqualTo: 'student')
+          .get();
+
+      Set<Map<String, String>> existingData = {};
+
+      for (var doc in snapshot.docs) {
+        final data = doc.data();
+        existingData.add({
+          'dni': (data['dni'] ?? '').toString().toLowerCase(),
+          'email': (data['email'] ?? '').toString().toLowerCase(),
+          'codigo': (data['codigoUniversitario'] ?? '')
+              .toString()
+              .toLowerCase(),
+          'username': (data['username'] ?? '').toString().toLowerCase(),
+        });
+      }
+
+      return existingData;
+    } catch (e) {
+      print('Error obteniendo usuarios existentes: $e');
+      return {};
+    }
+  }
+
+  bool _checkDuplicate(
+    Map<String, dynamic> studentData,
+    Set<Map<String, String>> existingUsers,
+  ) {
+    final dni = studentData['dni'].toString().toLowerCase();
+    final email = studentData['email'].toString().toLowerCase();
+    final codigo = studentData['codigoUniversitario'].toString().toLowerCase();
+    final username = studentData['username'].toString().toLowerCase();
+
+    for (var existing in existingUsers) {
+      if (existing['dni'] == dni ||
+          existing['email'] == email ||
+          existing['codigo'] == codigo ||
+          existing['username'] == username) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  Map<String, dynamic> _prepareStudentData(
+    Map<String, dynamic> rawData,
+    int index,
+  ) {
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+
+    String name = _getFieldValue(rawData, 'name', 'Estudiante ${index + 1}');
+    String dni = _getFieldValue(rawData, 'dni', 'DNI${timestamp % 100000000}');
+
+    String username = _getFieldValue(rawData, 'username', '');
+    if (username.isEmpty) {
+      username = _generateUsernameFromName(name);
+    }
+
+    String email = _getFieldValue(
+      rawData,
+      'email',
+      '${username.replaceAll('.', '_')}_${timestamp % 10000}@temp.com',
+    );
+
+    String codigoUniversitario = _getFieldValue(
+      rawData,
+      'codigoUniversitario',
+      'COD${timestamp % 1000000}',
+    );
+
+    return {
+      'email': email.toLowerCase(),
+      'name': name,
+      'username': username.toLowerCase(),
+      'codigoUniversitario': codigoUniversitario,
+      'dni': dni,
+      'documento': dni,
+      'facultad': _getFieldValue(rawData, 'facultad', 'Sin asignar'),
+      'carrera': _getFieldValue(rawData, 'carrera', 'Sin asignar'),
+      'modoContrato': _getFieldValue(rawData, 'modoContrato', null),
+      'modalidadEstudio': _getFieldValue(rawData, 'modalidadEstudio', null),
+      'sede': _getFieldValue(rawData, 'sede', null),
+      'ciclo': _getFieldValue(rawData, 'ciclo', null),
+      'grupo': _getFieldValue(rawData, 'grupo', null),
+      'correoInstitucional': _getFieldValue(
+        rawData,
+        'correoInstitucional',
+        null,
+      ),
+      'celular': _getFieldValue(rawData, 'celular', null),
+      'userType': 'student',
+      'createdAt': FieldValue.serverTimestamp(),
+    };
+  }
+
+  Future<void> _batchWriteToFirestore(
+    List<Map<String, dynamic>> students,
+  ) async {
+    try {
+      for (int i = 0; i < students.length; i += BATCH_SIZE) {
+        WriteBatch batch = _firestore.batch();
+
+        int end = (i + BATCH_SIZE < students.length)
+            ? i + BATCH_SIZE
+            : students.length;
+
+        for (int j = i; j < end; j++) {
+          DocumentReference docRef = _firestore.collection('users').doc();
+          batch.set(docRef, students[j]);
+        }
+
+        await batch.commit();
+
+        _successCount += (end - i);
+
+        setState(() {
+          _currentProgress = _totalRows;
+        });
+      }
+
+      print('✅ Importación completada: $_successCount estudiantes');
+    } catch (e) {
+      print('Error en batch write: $e');
+      _showMessage('Error durante la importación: $e');
+    }
+  }
+
+  String _getFieldValue(
+    Map<String, dynamic> data,
+    String field,
+    String? defaultValue,
+  ) {
+    var value = data[field];
+    if (value == null || value.toString().trim().isEmpty) {
+      return defaultValue ?? '';
+    }
+    return value.toString().trim();
+  }
+
+  String _generateUsernameFromName(String fullName) {
+    if (fullName.isEmpty || fullName == 'Sin nombre') {
+      return 'usuario${DateTime.now().millisecondsSinceEpoch % 10000}';
+    }
+
+    final parts = fullName
+        .toLowerCase()
+        .split(' ')
+        .where((p) => p.isNotEmpty)
+        .toList();
+    if (parts.length >= 2) {
+      return '${parts[0]}.${parts[parts.length - 1]}';
+    }
+    return parts.isNotEmpty ? parts[0] : 'usuario';
+  }
+
+  void _showResultsDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: _errorCount == 0
+                    ? Colors.green.shade50
+                    : Colors.blue.shade50,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Icon(
+                _errorCount == 0 ? Icons.check_circle : Icons.assessment,
+                color: _errorCount == 0
+                    ? Colors.green.shade600
+                    : Colors.blue.shade600,
+                size: 28,
+              ),
+            ),
+            const SizedBox(width: 12),
+            const Expanded(
+              child: Text(
+                'Resultados',
+                style: TextStyle(
+                  color: Color(0xFF1E3A5F),
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildResultCard(
+                'Total procesados',
+                '$_totalRows',
+                Icons.list_alt,
+                Colors.blue.shade600,
+                Colors.blue.shade50,
+              ),
+              const SizedBox(height: 12),
+              _buildResultCard(
+                'Importados exitosamente',
+                '$_successCount',
+                Icons.check_circle,
+                Colors.green.shade600,
+                Colors.green.shade50,
+              ),
+              const SizedBox(height: 12),
+              _buildResultCard(
+                'Duplicados omitidos',
+                '$_errorCount',
+                Icons.info_outline,
+                Colors.orange.shade600,
+                Colors.orange.shade50,
+              ),
+              if (_errors.isNotEmpty) ...[
+                const SizedBox(height: 20),
+                const Divider(),
+                const SizedBox(height: 12),
+                const Text(
+                  'Detalles de duplicados:',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF1E3A5F),
+                    fontSize: 14,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Container(
+                  constraints: const BoxConstraints(maxHeight: 200),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade50,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  padding: const EdgeInsets.all(12),
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: _errors.take(20).length,
+                    itemBuilder: (context, index) {
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Container(
+                              margin: const EdgeInsets.only(top: 6),
+                              width: 4,
+                              height: 4,
+                              decoration: BoxDecoration(
+                                color: Colors.grey.shade400,
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                _errors[index],
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: Color(0xFF64748B),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                ),
+                if (_errors.length > 20)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                      '... y ${_errors.length - 20} más',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFF64748B),
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  ),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              Navigator.pop(context);
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF1E3A5F),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+            ),
+            child: const Text('Cerrar'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildResultCard(
+    String label,
+    String value,
+    IconData icon,
+    Color iconColor,
+    Color bgColor,
+  ) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: iconColor.withOpacity(0.3)),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, size: 24, color: iconColor),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              label,
+              style: const TextStyle(fontSize: 14, color: Color(0xFF64748B)),
+            ),
+          ),
+          Text(
+            value,
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              color: iconColor,
+              fontSize: 18,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showMessage(String message) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(message),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
+          backgroundColor: const Color(0xFF1E3A5F),
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF1E3A5F),
+      body: SafeArea(
+        child: Column(
+          children: [
+            // Header
+            Padding(
+              padding: const EdgeInsets.all(20.0),
+              child: Row(
+                children: [
+                  Container(
+                    width: 50,
+                    height: 50,
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: const Icon(
+                      Icons.upload_file,
+                      color: Color(0xFF1E3A5F),
+                      size: 30,
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  const Expanded(
+                    child: Text(
+                      'Importar desde Excel',
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(
+                      Icons.close,
+                      color: Colors.white,
+                      size: 28,
+                    ),
+                    onPressed: () => Navigator.pop(context),
+                    tooltip: 'Cerrar',
+                  ),
+                ],
+              ),
+            ),
+            // Content Area
+            Expanded(
+              child: Container(
+                decoration: const BoxDecoration(
+                  color: Color(0xFFE8EDF2),
+                  borderRadius: BorderRadius.only(
+                    topLeft: Radius.circular(30),
+                    topRight: Radius.circular(30),
+                  ),
+                ),
+                child: _isLoading
+                    ? _buildLoadingView()
+                    : FadeTransition(
+                        opacity: _fadeAnimation,
+                        child: SlideTransition(
+                          position: _slideAnimation,
+                          child: _buildMainContent(),
+                        ),
+                      ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLoadingView() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(20),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.1),
+                  blurRadius: 20,
+                  offset: const Offset(0, 10),
+                ),
+              ],
+            ),
+            child: const CircularProgressIndicator(
+              strokeWidth: 6,
+              valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF1E3A5F)),
+            ),
+          ),
+          const SizedBox(height: 32),
+          Text(
+            _currentProgress < _totalRows
+                ? 'Validando datos...'
+                : 'Guardando en base de datos...',
+            style: const TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              color: Color(0xFF1E3A5F),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            '$_currentProgress / $_totalRows estudiantes',
+            style: const TextStyle(fontSize: 16, color: Color(0xFF64748B)),
+          ),
+          const SizedBox(height: 24),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 40),
+            child: Column(
+              children: [
+                Container(
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(10),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.05),
+                        blurRadius: 10,
+                        offset: const Offset(0, 5),
+                      ),
+                    ],
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: LinearProgressIndicator(
+                      value: _totalRows > 0 ? _currentProgress / _totalRows : 0,
+                      backgroundColor: Colors.grey[200],
+                      valueColor: const AlwaysStoppedAnimation<Color>(
+                        Color(0xFF1E3A5F),
+                      ),
+                      minHeight: 12,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  '${(_totalRows > 0 ? (_currentProgress / _totalRows * 100) : 0).toStringAsFixed(1)}%',
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF1E3A5F),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 24),
+          Container(
+            margin: const EdgeInsets.symmetric(horizontal: 40),
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                Column(
+                  children: [
+                    const Icon(
+                      Icons.check_circle,
+                      color: Colors.green,
+                      size: 24,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '$_successCount',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: Colors.green,
+                        fontSize: 16,
+                      ),
+                    ),
+                    const Text(
+                      'Exitosos',
+                      style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                    ),
+                  ],
+                ),
+                Container(width: 1, height: 40, color: Colors.grey.shade300),
+                Column(
+                  children: [
+                    const Icon(
+                      Icons.info_outline,
+                      color: Colors.orange,
+                      size: 24,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '$_errorCount',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: Colors.orange,
+                        fontSize: 16,
+                      ),
+                    ),
+                    const Text(
+                      'Duplicados',
+                      style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMainContent() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Card principal de importación
+          Card(
+            elevation: 4,
+            shadowColor: Colors.black26,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(20),
+            ),
+            color: Colors.white,
+            child: Padding(
+              padding: const EdgeInsets.all(24.0),
+              child: Column(
+                children: [
+                  Container(
+                    width: 80,
+                    height: 80,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1E3A5F).withOpacity(0.1),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.upload_file,
+                      size: 40,
+                      color: Color(0xFF1E3A5F),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  Text(
+                    'Importar Estudiantes desde Excel',
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.bold,
+                      color: const Color(0xFF1E3A5F),
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Selecciona un archivo Excel (.xlsx o .xls)',
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: const Color(0xFF64748B),
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 20),
+                  // Features
+                  _buildFeatureRow(
+                    Icons.check_circle_outline,
+                    'Acepta celdas vacías',
+                  ),
+                  const SizedBox(height: 8),
+                  _buildFeatureRow(Icons.bolt, 'Importación ultra rápida'),
+                  const SizedBox(height: 8),
+                  _buildFeatureRow(
+                    Icons.refresh,
+                    'Omite duplicados automáticamente',
+                  ),
+                  const SizedBox(height: 24),
+                  ElevatedButton.icon(
+                    onPressed: _pickExcelFile,
+                    icon: const Icon(Icons.file_open),
+                    label: const Text('Seleccionar Archivo Excel'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF1E3A5F),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 32,
+                        vertical: 16,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      elevation: 2,
+                    ),
+                  ),
+                  if (_fileName != null) ...[
+                    const SizedBox(height: 20),
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.green.shade50,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: Colors.green.shade300,
+                          width: 2,
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: Colors.green.shade100,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Icon(
+                              Icons.check_circle,
+                              color: Colors.green.shade700,
+                              size: 24,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  'Archivo seleccionado',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Color(0xFF64748B),
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  _fileName!,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFF1E3A5F),
+                                    fontSize: 14,
+                                  ),
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          // Vista previa
+          if (_fileSelected && _previewData.isNotEmpty) ...[
+            const SizedBox(height: 20),
+            Card(
+              elevation: 4,
+              shadowColor: Colors.black26,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(20),
+              ),
+              color: Colors.white,
+              child: Padding(
+                padding: const EdgeInsets.all(20.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: Colors.blue.shade50,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Icon(
+                            Icons.preview,
+                            color: Colors.blue.shade600,
+                            size: 24,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        const Expanded(
+                          child: Text(
+                            'Vista Previa',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF1E3A5F),
+                            ),
+                          ),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 8,
+                          ),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF1E3A5F),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Text(
+                            '$_totalRows estudiantes',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 20),
+                    ListView.builder(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      itemCount: _previewData.length,
+                      itemBuilder: (context, index) {
+                        var student = _previewData[index];
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 12),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF5F5F5),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.grey.shade300),
+                          ),
+                          child: ListTile(
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 8,
+                            ),
+                            leading: Container(
+                              width: 45,
+                              height: 45,
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF1E3A5F),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Center(
+                                child: Text(
+                                  '${index + 1}',
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 16,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            title: Text(
+                              student['name'] ?? 'Sin nombre',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFF1E3A5F),
+                                fontSize: 15,
+                              ),
+                            ),
+                            subtitle: Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Icon(
+                                        Icons.badge,
+                                        size: 14,
+                                        color: Colors.grey.shade600,
+                                      ),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        'DNI: ${student['dni'] ?? "Sin dato"}',
+                                        style: TextStyle(
+                                          fontSize: 13,
+                                          color: Colors.grey.shade700,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Row(
+                                    children: [
+                                      Icon(
+                                        Icons.numbers,
+                                        size: 14,
+                                        color: Colors.grey.shade600,
+                                      ),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        'Código: ${student['codigoUniversitario'] ?? "Sin dato"}',
+                                        style: TextStyle(
+                                          fontSize: 13,
+                                          color: Colors.grey.shade700,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                            trailing: Container(
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: Colors.blue.shade50,
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Icon(
+                                Icons.person,
+                                color: Colors.blue.shade600,
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                    if (_totalRows > 5) ...[
+                      const SizedBox(height: 12),
+                      Center(
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 20,
+                            vertical: 10,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.grey.shade100,
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Text(
+                            'Y ${_totalRows - 5} estudiantes más...',
+                            style: const TextStyle(
+                              color: Color(0xFF64748B),
+                              fontStyle: FontStyle.italic,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 20),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        onPressed: _importData,
+                        icon: const Icon(Icons.rocket_launch, size: 22),
+                        label: const Text(
+                          'Importar Todos (Modo Rápido)',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 18),
+                          backgroundColor: const Color(0xFF1E3A5F),
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          elevation: 3,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+          // Mensaje de error si no hay datos
+          if (_fileSelected && _previewData.isEmpty) ...[
+            const SizedBox(height: 20),
+            Card(
+              elevation: 4,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(20),
+              ),
+              color: Colors.orange.shade50,
+              child: Padding(
+                padding: const EdgeInsets.all(20.0),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.shade100,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Icon(
+                        Icons.warning_amber_rounded,
+                        color: Colors.orange.shade700,
+                        size: 28,
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    const Expanded(
+                      child: Text(
+                        'No se encontraron datos válidos. Verifica que el archivo tenga al menos la columna "Estudiante" o "Documento".',
+                        style: TextStyle(
+                          color: Color(0xFF1E3A5F),
+                          fontSize: 14,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFeatureRow(IconData icon, String text) {
+    return Row(
+      children: [
+        Icon(icon, size: 20, color: const Color(0xFF1E3A5F)),
+        const SizedBox(width: 10),
+        Text(
+          text,
+          style: const TextStyle(fontSize: 14, color: Color(0xFF64748B)),
+        ),
+      ],
+    );
+  }
+}
