@@ -66,6 +66,8 @@ class _EscanearQRScreenState extends State<EscanearQRScreen>
     }
   }
 
+  // En el archivo escanear_qr.dart, reemplaza el método _procesarQR completo:
+
   Future<void> _procesarQR(String qrData) async {
     if (_isProcessing || _hasScanned) return;
 
@@ -101,7 +103,69 @@ class _EscanearQRScreenState extends State<EscanearQRScreen>
         return;
       }
 
-      // Debug: Imprimir datos del QR
+      // ═══════════════════════════════════════════════════════════════
+      // ✅ VALIDACIÓN CRÍTICA: Verificar si el QR está activo
+      // ═══════════════════════════════════════════════════════════════
+      final qrId = qrInfo['qrId'];
+
+      if (qrId != null && qrId.toString().isNotEmpty) {
+        print('🔍 Verificando estado del QR...');
+        print('   QR ID: $qrId');
+
+        try {
+          final qrDoc = await _firestore
+              .collection('events')
+              .doc(qrInfo['eventId'])
+              .collection('qr_codes')
+              .doc(qrId)
+              .get();
+
+          if (!qrDoc.exists) {
+            _showResult(
+              success: false,
+              message: '⚠️ Este código QR no existe o fue eliminado',
+            );
+            return;
+          }
+
+          final qrData = qrDoc.data();
+          final isActive = qrData?['activo'] ?? false;
+
+          print('📊 Estado del QR:');
+          print('   activo: $isActive');
+
+          if (!isActive) {
+            final finalizadoAt = qrData?['finalizadoAt'] as Timestamp?;
+            final fechaFinalizado =
+                finalizadoAt?.toDate().toString().substring(0, 16) ??
+                'Fecha desconocida';
+
+            _showResult(
+              success: false,
+              message:
+                  '🔒 Este código QR ya fue FINALIZADO\n\n'
+                  '❌ No se pueden registrar más asistencias con este QR\n\n'
+                  '📅 Finalizado: $fechaFinalizado\n\n'
+                  '💡 Solicita al organizador que genere un nuevo código QR si es necesario.',
+            );
+            return;
+          }
+
+          print('✅ QR activo - Continuando con el registro...');
+        } catch (e) {
+          print('❌ Error al verificar estado del QR: $e');
+          _showResult(
+            success: false,
+            message: 'Error al verificar el estado del QR: $e',
+          );
+          return;
+        }
+      } else {
+        // QR antiguo sin qrId (retrocompatibilidad)
+        print('⚠️ QR sin ID - Formato antiguo detectado');
+      }
+
+      // Debug: Imprimir datos del QR escaneado
       print('📱 Datos del QR escaneado:');
       print('   EventId: ${qrInfo['eventId']}');
       print('   Categoría: ${qrInfo['categoria']}');
@@ -397,6 +461,7 @@ class _EscanearQRScreenState extends State<EscanearQRScreen>
         'codigoProyecto': codigoFinal,
         'timestamp': FieldValue.serverTimestamp(),
         'qrTimestamp': qrInfo['timestamp'],
+        'qrId': qrId, // ✅ Guardar el ID del QR usado
         'registeredBy': 'qr_scan',
         'registrationMethod': 'qr_scan',
         'userFacultad': userData['facultad'],
@@ -415,6 +480,7 @@ class _EscanearQRScreenState extends State<EscanearQRScreen>
       print('   codigoProyecto: ${asistenciaData['codigoProyecto']}');
       print('   tituloProyecto: ${asistenciaData['tituloProyecto']}');
       print('   grupo: ${asistenciaData['grupo']}');
+      print('   qrId: ${asistenciaData['qrId']}');
 
       final docRef = await _firestore
           .collection('asistencias')

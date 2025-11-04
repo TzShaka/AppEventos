@@ -7,6 +7,7 @@ import 'gestion_grupos.dart';
 import '/admin/interfaz/seleccionar_ganadores_screen.dart';
 import 'reportes.dart';
 import 'editar_notas.dart';
+import 'periodos.dart';
 
 class AdminScreen extends StatefulWidget {
   const AdminScreen({super.key});
@@ -170,6 +171,18 @@ class _AdminScreenState extends State<AdminScreen> {
                           Navigator.of(context).push(
                             MaterialPageRoute(
                               builder: (context) => const EditarNotasScreen(),
+                            ),
+                          );
+                        },
+                      ),
+                      _buildMenuCard(
+                        imagePath: 'assets/icons/periodos.png',
+                        title: 'Gestión de\nPeríodos',
+                        subtitle: 'Administrar períodos académicos',
+                        onTap: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (context) => const PeriodosScreen(),
                             ),
                           );
                         },

@@ -30,6 +30,9 @@ class _ProyectosCategoriaScreenState extends State<ProyectosCategoriaScreen>
   bool _isLoading = true;
   String? _qrDataGenerado;
   Map<String, dynamic>? _proyectoSeleccionado;
+  String? _qrId; // ID único del QR generado
+  bool _qrFinalizado = false; // Estado de finalización del QR
+  bool _finalizando = false; // Indicador de proceso de finalización
 
   late AnimationController _fadeController;
   late AnimationController _scaleController;
@@ -86,13 +89,22 @@ class _ProyectosCategoriaScreenState extends State<ProyectosCategoriaScreen>
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // MÉTODO CORREGIDO: Nombres de campos correctos
+  // MÉTODO MEJORADO: Genera QR con ID único y registro en Firestore
   // ═══════════════════════════════════════════════════════════════
-  void _generarQRParaProyecto(Map<String, dynamic> proyecto) {
+  Future<void> _generarQRParaProyecto(Map<String, dynamic> proyecto) async {
     print('🎯 GENERANDO QR PARA PROYECTO:');
     print('   Código: ${proyecto['Código']}');
     print('   Título: ${proyecto['Título']}');
     print('   Sala: ${proyecto['Sala']}');
+
+    // Generar ID único para este QR
+    final qrDocRef = FirebaseFirestore.instance
+        .collection('events')
+        .doc(widget.eventId)
+        .collection('qr_codes')
+        .doc(); // Genera ID automático
+
+    final qrId = qrDocRef.id;
 
     final qrInfo = {
       'eventId': widget.eventId,
@@ -101,36 +113,106 @@ class _ProyectosCategoriaScreenState extends State<ProyectosCategoriaScreen>
       'carrera': widget.carrera,
       'categoria': widget.categoria,
 
-      // ⚠️ CRÍTICO: Usar los nombres correctos que espera escanear_qr.dart
-      'codigoProyecto': proyecto['Código'] ?? 'Sin código', // ✅ CORREGIDO
-      'tituloProyecto': proyecto['Título'] ?? 'Sin título', // ✅ CORREGIDO
-      'grupo': proyecto['Sala'], // ✅ CORREGIDO (puede ser null)
+      // Campos del proyecto
+      'codigoProyecto': proyecto['Código'] ?? 'Sin código',
+      'tituloProyecto': proyecto['Título'] ?? 'Sin título',
+      'grupo': proyecto['Sala'],
 
+      // Campos de control
+      'qrId': qrId, // ✅ ID único del QR
       'timestamp': DateTime.now().toIso8601String(),
       'type': 'asistencia_categoria',
+      'activo': true, // ✅ Estado del QR
     };
 
     print('📦 QR INFO CREADO:');
+    print('   qrId: $qrId');
     print('   codigoProyecto: ${qrInfo['codigoProyecto']}');
     print('   tituloProyecto: ${qrInfo['tituloProyecto']}');
-    print('   grupo: ${qrInfo['grupo']}');
+    print('   activo: true');
 
-    final qrJson = jsonEncode(qrInfo);
-    print('📄 QR JSON: $qrJson');
+    try {
+      // Guardar registro del QR en Firestore
+      await qrDocRef.set({
+        'eventId': widget.eventId,
+        'codigoProyecto': proyecto['Código'] ?? 'Sin código',
+        'tituloProyecto': proyecto['Título'] ?? 'Sin título',
+        'categoria': widget.categoria,
+        'grupo': proyecto['Sala'],
+        'activo': true,
+        'createdAt': FieldValue.serverTimestamp(),
+        'finalizadoAt': null,
+      });
 
-    setState(() {
-      _qrDataGenerado = qrJson;
-      _proyectoSeleccionado = proyecto;
-    });
+      final qrJson = jsonEncode(qrInfo);
+      print('📄 QR JSON: $qrJson');
+      print('✅ QR registrado en Firestore');
 
-    _scaleController.forward(from: 0);
-    _showSnackBar('¡Código QR generado para el proyecto!');
+      setState(() {
+        _qrDataGenerado = qrJson;
+        _proyectoSeleccionado = proyecto;
+        _qrId = qrId;
+        _qrFinalizado = false;
+      });
+
+      _scaleController.forward(from: 0);
+      _showSnackBar('¡Código QR generado y activo!');
+    } catch (e) {
+      print('❌ Error al registrar QR: $e');
+      _showSnackBar('Error al generar QR: $e', isError: true);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // MÉTODO NUEVO: Finalizar QR (marcar como inactivo)
+  // ═══════════════════════════════════════════════════════════════
+  Future<void> _finalizarQR() async {
+    if (_qrId == null || _qrFinalizado) return;
+
+    setState(() => _finalizando = true);
+
+    try {
+      // Actualizar el documento del QR en Firestore
+      await FirebaseFirestore.instance
+          .collection('events')
+          .doc(widget.eventId)
+          .collection('qr_codes')
+          .doc(_qrId)
+          .update({
+            'activo': false,
+            'finalizadoAt': FieldValue.serverTimestamp(),
+          });
+
+      print('🔒 QR FINALIZADO:');
+      print('   qrId: $_qrId');
+      print('   activo: false');
+
+      setState(() {
+        _qrFinalizado = true;
+        _finalizando = false;
+      });
+
+      _showSnackBar('¡QR finalizado! Ya no se podrá escanear', isError: false);
+
+      // Esperar un momento para que el usuario vea el mensaje
+      await Future.delayed(const Duration(seconds: 2));
+
+      if (mounted) {
+        Navigator.pop(context);
+      }
+    } catch (e) {
+      print('❌ Error al finalizar QR: $e');
+      setState(() => _finalizando = false);
+      _showSnackBar('Error al finalizar QR: $e', isError: true);
+    }
   }
 
   void _limpiarQR() {
     setState(() {
       _qrDataGenerado = null;
       _proyectoSeleccionado = null;
+      _qrId = null;
+      _qrFinalizado = false;
     });
   }
 
@@ -423,43 +505,103 @@ class _ProyectosCategoriaScreenState extends State<ProyectosCategoriaScreen>
               ),
               child: Column(
                 children: [
+                  // ═══════════════════════════════════════════════════
+                  // BADGE DE ESTADO DEL QR
+                  // ═══════════════════════════════════════════════════
                   Container(
                     padding: const EdgeInsets.symmetric(
                       horizontal: 16,
                       vertical: 8,
                     ),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF1E3A5F),
+                      color: _qrFinalizado
+                          ? Colors.red.shade600
+                          : const Color(0xFF1E3A5F),
                       borderRadius: BorderRadius.circular(8),
                     ),
-                    child: Text(
-                      _proyectoSeleccionado!['Código'] ?? 'Sin código',
-                      style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
-                      ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          _qrFinalizado ? Icons.block : Icons.check_circle,
+                          color: Colors.white,
+                          size: 18,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          _qrFinalizado
+                              ? 'QR FINALIZADO'
+                              : _proyectoSeleccionado!['Código'] ??
+                                    'Sin código',
+                          style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                   const SizedBox(height: 20),
-                  Container(
-                    padding: const EdgeInsets.all(20),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(
-                        color: const Color(0xFFE0E7ED),
-                        width: 2,
+
+                  // ═══════════════════════════════════════════════════
+                  // QR CODE CON OVERLAY SI ESTÁ FINALIZADO
+                  // ═══════════════════════════════════════════════════
+                  Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(20),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(
+                            color: _qrFinalizado
+                                ? Colors.red.shade300
+                                : const Color(0xFFE0E7ED),
+                            width: 2,
+                          ),
+                        ),
+                        child: Opacity(
+                          opacity: _qrFinalizado ? 0.3 : 1.0,
+                          child: QrImageView(
+                            data: _qrDataGenerado!,
+                            version: QrVersions.auto,
+                            size: 250.0,
+                            backgroundColor: Colors.white,
+                          ),
+                        ),
                       ),
-                    ),
-                    child: QrImageView(
-                      data: _qrDataGenerado!,
-                      version: QrVersions.auto,
-                      size: 250.0,
-                      backgroundColor: Colors.white,
-                    ),
+                      if (_qrFinalizado)
+                        Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: Colors.red.shade600,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: const Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.block, color: Colors.white, size: 48),
+                              SizedBox(height: 8),
+                              Text(
+                                'QR INACTIVO',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 16,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
                   ),
                   const SizedBox(height: 20),
+
+                  // ═══════════════════════════════════════════════════
+                  // INFORMACIÓN DEL QR
+                  // ═══════════════════════════════════════════════════
                   Container(
                     padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
@@ -484,6 +626,11 @@ class _ProyectosCategoriaScreenState extends State<ProyectosCategoriaScreen>
                             'Sala:',
                             _proyectoSeleccionado!['Sala'],
                           ),
+                        _buildInfoRow('ID QR:', _qrId ?? 'N/A'),
+                        _buildInfoRow(
+                          'Estado:',
+                          _qrFinalizado ? '🔴 Inactivo' : '🟢 Activo',
+                        ),
                         _buildInfoRow(
                           'Generado:',
                           DateTime.now().toString().split('.')[0],
@@ -492,20 +639,28 @@ class _ProyectosCategoriaScreenState extends State<ProyectosCategoriaScreen>
                     ),
                   ),
                   const SizedBox(height: 20),
+
+                  // ═══════════════════════════════════════════════════
+                  // BOTONES DE ACCIÓN
+                  // ═══════════════════════════════════════════════════
                   Row(
                     children: [
                       Expanded(
                         child: OutlinedButton.icon(
-                          onPressed: _limpiarQR,
+                          onPressed: _qrFinalizado ? null : _limpiarQR,
                           icon: const Icon(Icons.arrow_back_rounded, size: 20),
                           label: const Text('Volver'),
                           style: OutlinedButton.styleFrom(
                             padding: const EdgeInsets.symmetric(vertical: 14),
-                            side: const BorderSide(
-                              color: Color(0xFF1E3A5F),
+                            side: BorderSide(
+                              color: _qrFinalizado
+                                  ? Colors.grey.shade300
+                                  : const Color(0xFF1E3A5F),
                               width: 1.5,
                             ),
-                            foregroundColor: const Color(0xFF1E3A5F),
+                            foregroundColor: _qrFinalizado
+                                ? Colors.grey.shade400
+                                : const Color(0xFF1E3A5F),
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(12),
                             ),
@@ -515,12 +670,36 @@ class _ProyectosCategoriaScreenState extends State<ProyectosCategoriaScreen>
                       const SizedBox(width: 12),
                       Expanded(
                         child: ElevatedButton.icon(
-                          onPressed: () => Navigator.pop(context),
-                          icon: const Icon(Icons.check_rounded, size: 20),
-                          label: const Text('Finalizar'),
+                          onPressed: _qrFinalizado || _finalizando
+                              ? null
+                              : _finalizarQR,
+                          icon: _finalizando
+                              ? const SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    color: Colors.white,
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : Icon(
+                                  _qrFinalizado
+                                      ? Icons.check_circle
+                                      : Icons.lock_outline,
+                                  size: 20,
+                                ),
+                          label: Text(
+                            _finalizando
+                                ? 'Finalizando...'
+                                : (_qrFinalizado ? 'Finalizado' : 'Finalizar'),
+                          ),
                           style: ElevatedButton.styleFrom(
                             padding: const EdgeInsets.symmetric(vertical: 14),
-                            backgroundColor: Colors.green.shade600,
+                            backgroundColor: _qrFinalizado
+                                ? Colors.grey.shade400
+                                : (_finalizando
+                                      ? Colors.orange.shade600
+                                      : Colors.red.shade600),
                             foregroundColor: Colors.white,
                             elevation: 0,
                             shape: RoundedRectangleBorder(
