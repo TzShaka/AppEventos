@@ -20,7 +20,7 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _obscurePassword = true;
   int _currentBackgroundIndex = 0;
   Timer? _backgroundTimer;
-  bool _imageLoaded = false; // ✅ NUEVO
+  bool _imageLoaded = false;
 
   final List<String> _backgrounds = [
     'assets/images/fondo01.png',
@@ -32,10 +32,9 @@ class _LoginScreenState extends State<LoginScreen> {
   void initState() {
     super.initState();
     _startBackgroundRotation();
-    _precacheImages(); // ✅ NUEVO - Precachear imágenes
+    _precacheImages();
   }
 
-  // ✅ NUEVO - Método para precachear imágenes
   Future<void> _precacheImages() async {
     try {
       await precacheImage(const AssetImage('assets/images/logo.png'), context);
@@ -49,7 +48,6 @@ class _LoginScreenState extends State<LoginScreen> {
       }
     } catch (e) {
       print('Error precaching images: $e');
-      // Si falla, igual continuar
       if (mounted) {
         setState(() {
           _imageLoaded = true;
@@ -95,21 +93,17 @@ class _LoginScreenState extends State<LoginScreen> {
       final username = _userController.text.trim();
       final password = _passwordController.text;
 
-      // Primero intentar login como admin/asistente predefinidos
       if (username == PrefsHelper.adminEmail ||
           username == PrefsHelper.asistenteEmail) {
         success = await PrefsHelper.loginAdmin(username, password);
         if (success) {
           loggedInUserType = await PrefsHelper.getUserType();
         }
-      }
-      // Si no es admin/asistente, intentar como jurado
-      else {
+      } else {
         success = await PrefsHelper.loginJurado(username, password);
         if (success) {
           loggedInUserType = await PrefsHelper.getUserType();
         } else {
-          // Si no es jurado, intentar como estudiante
           success = await PrefsHelper.loginStudent(username, password);
           if (success) {
             loggedInUserType = await PrefsHelper.getUserType();
@@ -118,7 +112,6 @@ class _LoginScreenState extends State<LoginScreen> {
       }
 
       if (success && loggedInUserType != null) {
-        // Navegar según el tipo de usuario
         if (loggedInUserType == PrefsHelper.userTypeAdmin) {
           if (mounted) {
             Navigator.of(context).pushReplacement(
@@ -169,10 +162,14 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // ✅ Mostrar loading mientras cargan las imágenes
     if (!_imageLoaded) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
+
+    // ✅ Detectar orientación
+    final isLandscape =
+        MediaQuery.of(context).orientation == Orientation.landscape;
+    final screenHeight = MediaQuery.of(context).size.height;
 
     return Scaffold(
       body: Stack(
@@ -197,168 +194,180 @@ class _LoginScreenState extends State<LoginScreen> {
 
           // Contenido
           SafeArea(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.symmetric(horizontal: 24.0),
-              child: Column(
-                children: [
-                  const SizedBox(height: 80),
-
-                  // Logo UPeU - ✅ Ahora precacheado
-                  Image.asset(
-                    'assets/images/logo.png',
-                    height: 180,
-                    errorBuilder: (context, error, stackTrace) {
-                      return const Icon(
-                        Icons.school,
-                        size: 180,
-                        color: Colors.white,
-                      );
-                    },
-                  ),
-
-                  const SizedBox(height: 120),
-
-                  // Card de login
-                  Container(
-                    padding: const EdgeInsets.all(30),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.85),
-                      borderRadius: BorderRadius.circular(30),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.15),
-                          blurRadius: 15,
-                          offset: const Offset(0, 5),
-                        ),
-                      ],
+            child: Center(
+              child: SingleChildScrollView(
+                padding: EdgeInsets.symmetric(
+                  horizontal: isLandscape ? 40.0 : 24.0,
+                  vertical: 20.0,
+                ),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    // ✅ Logo adaptativo según orientación
+                    Image.asset(
+                      'assets/images/logo.png',
+                      height: isLandscape
+                          ? screenHeight *
+                                0.25 // 25% de la altura en horizontal
+                          : 180,
+                      errorBuilder: (context, error, stackTrace) {
+                        return Icon(
+                          Icons.school,
+                          size: isLandscape ? screenHeight * 0.25 : 180,
+                          color: Colors.white,
+                        );
+                      },
                     ),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        // Campo usuario
-                        Container(
-                          decoration: BoxDecoration(
-                            color: Colors.grey[50],
-                            borderRadius: BorderRadius.circular(15),
-                            border: Border.all(
-                              color: Colors.grey[300]!,
-                              width: 1,
-                            ),
-                          ),
-                          child: TextField(
-                            controller: _userController,
-                            keyboardType: TextInputType.text,
-                            style: const TextStyle(
-                              fontSize: 16,
-                              color: Colors.black87,
-                            ),
-                            decoration: InputDecoration(
-                              hintText: 'Usuario',
-                              hintStyle: TextStyle(color: Colors.grey[400]),
-                              prefixIcon: const Icon(
-                                Icons.person_outline,
-                                color: Color(0xFF1A5490),
-                                size: 24,
-                              ),
-                              border: InputBorder.none,
-                              contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 20,
-                                vertical: 18,
-                              ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 20),
 
-                        // Campo contraseña
-                        Container(
-                          decoration: BoxDecoration(
-                            color: Colors.grey[50],
-                            borderRadius: BorderRadius.circular(15),
-                            border: Border.all(
-                              color: Colors.grey[300]!,
-                              width: 1,
-                            ),
-                          ),
-                          child: TextField(
-                            controller: _passwordController,
-                            obscureText: _obscurePassword,
-                            style: const TextStyle(
-                              fontSize: 16,
-                              color: Colors.black87,
-                            ),
-                            decoration: InputDecoration(
-                              hintText: 'Contraseña',
-                              hintStyle: TextStyle(color: Colors.grey[400]),
-                              prefixIcon: const Icon(
-                                Icons.lock_outline,
-                                color: Color(0xFF1A5490),
-                                size: 24,
-                              ),
-                              suffixIcon: IconButton(
-                                icon: Icon(
-                                  _obscurePassword
-                                      ? Icons.visibility_off_outlined
-                                      : Icons.visibility_outlined,
-                                  color: const Color(0xFF1A5490),
-                                  size: 24,
-                                ),
-                                onPressed: () {
-                                  setState(() {
-                                    _obscurePassword = !_obscurePassword;
-                                  });
-                                },
-                              ),
-                              border: InputBorder.none,
-                              contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 20,
-                                vertical: 18,
-                              ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 30),
+                    SizedBox(height: isLandscape ? 20 : 40),
 
-                        // Botón de login
-                        SizedBox(
-                          width: double.infinity,
-                          height: 55,
-                          child: ElevatedButton(
-                            onPressed: _isLoading ? null : _login,
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFF1A5490),
-                              foregroundColor: Colors.white,
-                              elevation: 0,
-                              shape: RoundedRectangleBorder(
+                    // ✅ Card de login con ancho máximo en horizontal
+                    ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxWidth: isLandscape ? 500 : double.infinity,
+                      ),
+                      child: Container(
+                        padding: EdgeInsets.all(isLandscape ? 24 : 30),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.85),
+                          borderRadius: BorderRadius.circular(30),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.15),
+                              blurRadius: 15,
+                              offset: const Offset(0, 5),
+                            ),
+                          ],
+                        ),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            // Campo usuario
+                            Container(
+                              decoration: BoxDecoration(
+                                color: Colors.grey[50],
                                 borderRadius: BorderRadius.circular(15),
+                                border: Border.all(
+                                  color: Colors.grey[300]!,
+                                  width: 1,
+                                ),
                               ),
-                              disabledBackgroundColor: Colors.grey[400],
-                            ),
-                            child: _isLoading
-                                ? const SizedBox(
-                                    height: 24,
-                                    width: 24,
-                                    child: CircularProgressIndicator(
-                                      color: Colors.white,
-                                      strokeWidth: 2.5,
-                                    ),
-                                  )
-                                : const Text(
-                                    'Ingresar',
-                                    style: TextStyle(
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.w600,
-                                      letterSpacing: 0.5,
-                                    ),
+                              child: TextField(
+                                controller: _userController,
+                                keyboardType: TextInputType.text,
+                                style: const TextStyle(
+                                  fontSize: 16,
+                                  color: Colors.black87,
+                                ),
+                                decoration: InputDecoration(
+                                  hintText: 'Usuario',
+                                  hintStyle: TextStyle(color: Colors.grey[400]),
+                                  prefixIcon: const Icon(
+                                    Icons.person_outline,
+                                    color: Color(0xFF1A5490),
+                                    size: 24,
                                   ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
+                                  border: InputBorder.none,
+                                  contentPadding: EdgeInsets.symmetric(
+                                    horizontal: 20,
+                                    vertical: isLandscape ? 14 : 18,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            SizedBox(height: isLandscape ? 15 : 20),
 
-                  const SizedBox(height: 50),
-                ],
+                            // Campo contraseña
+                            Container(
+                              decoration: BoxDecoration(
+                                color: Colors.grey[50],
+                                borderRadius: BorderRadius.circular(15),
+                                border: Border.all(
+                                  color: Colors.grey[300]!,
+                                  width: 1,
+                                ),
+                              ),
+                              child: TextField(
+                                controller: _passwordController,
+                                obscureText: _obscurePassword,
+                                style: const TextStyle(
+                                  fontSize: 16,
+                                  color: Colors.black87,
+                                ),
+                                decoration: InputDecoration(
+                                  hintText: 'Contraseña',
+                                  hintStyle: TextStyle(color: Colors.grey[400]),
+                                  prefixIcon: const Icon(
+                                    Icons.lock_outline,
+                                    color: Color(0xFF1A5490),
+                                    size: 24,
+                                  ),
+                                  suffixIcon: IconButton(
+                                    icon: Icon(
+                                      _obscurePassword
+                                          ? Icons.visibility_off_outlined
+                                          : Icons.visibility_outlined,
+                                      color: const Color(0xFF1A5490),
+                                      size: 24,
+                                    ),
+                                    onPressed: () {
+                                      setState(() {
+                                        _obscurePassword = !_obscurePassword;
+                                      });
+                                    },
+                                  ),
+                                  border: InputBorder.none,
+                                  contentPadding: EdgeInsets.symmetric(
+                                    horizontal: 20,
+                                    vertical: isLandscape ? 14 : 18,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            SizedBox(height: isLandscape ? 20 : 30),
+
+                            // Botón de login
+                            SizedBox(
+                              width: double.infinity,
+                              height: isLandscape ? 50 : 55,
+                              child: ElevatedButton(
+                                onPressed: _isLoading ? null : _login,
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFF1A5490),
+                                  foregroundColor: Colors.white,
+                                  elevation: 0,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(15),
+                                  ),
+                                  disabledBackgroundColor: Colors.grey[400],
+                                ),
+                                child: _isLoading
+                                    ? const SizedBox(
+                                        height: 24,
+                                        width: 24,
+                                        child: CircularProgressIndicator(
+                                          color: Colors.white,
+                                          strokeWidth: 2.5,
+                                        ),
+                                      )
+                                    : const Text(
+                                        'Ingresar',
+                                        style: TextStyle(
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.w600,
+                                          letterSpacing: 0.5,
+                                        ),
+                                      ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+
+                    SizedBox(height: isLandscape ? 20 : 30),
+                  ],
+                ),
               ),
             ),
           ),

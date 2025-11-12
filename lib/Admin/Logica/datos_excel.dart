@@ -427,12 +427,6 @@ class _DatosExcelScreenState extends State<DatosExcelScreen>
       username = _generateUsernameFromName(name);
     }
 
-    String email = _getFieldValue(
-      rawData,
-      'email',
-      '${username.replaceAll('.', '_')}_${timestamp % 10000}@temp.com',
-    );
-
     String codigoUniversitario = _getFieldValue(
       rawData,
       'codigoUniversitario',
@@ -440,7 +434,6 @@ class _DatosExcelScreenState extends State<DatosExcelScreen>
     );
 
     return {
-      'email': email.toLowerCase(),
       'name': name,
       'username': username.toLowerCase(),
       'codigoUniversitario': codigoUniversitario,

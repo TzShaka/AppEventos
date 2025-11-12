@@ -29,16 +29,20 @@ class EventosService {
     ],
   };
 
-  // Crear nuevo evento
+  // Crear nuevo evento con período
   Future<void> createEvent({
     required String name,
     required String facultad,
     required String carrera,
+    required String periodoId,
+    required String periodoNombre,
   }) async {
     await _firestore.collection('events').add({
       'name': name,
       'facultad': facultad,
       'carrera': carrera,
+      'periodoId': periodoId,
+      'periodoNombre': periodoNombre,
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
       'fecha': null,
@@ -48,19 +52,31 @@ class EventosService {
     });
   }
 
-  // Editar evento
+  // Editar evento CON PERÍODO
   Future<void> updateEvent({
     required String eventId,
     required String name,
     required String facultad,
     required String carrera,
+    String? periodoId,
+    String? periodoNombre,
   }) async {
-    await _firestore.collection('events').doc(eventId).update({
+    final updateData = {
       'name': name,
       'facultad': facultad,
       'carrera': carrera,
       'updatedAt': FieldValue.serverTimestamp(),
-    });
+    };
+
+    // Solo agregar período si se proporciona
+    if (periodoId != null) {
+      updateData['periodoId'] = periodoId;
+    }
+    if (periodoNombre != null) {
+      updateData['periodoNombre'] = periodoNombre;
+    }
+
+    await _firestore.collection('events').doc(eventId).update(updateData);
   }
 
   // Eliminar evento
@@ -105,6 +121,14 @@ class EventosService {
     return null;
   }
 
+  // ✅ VALIDAR PERÍODO (MÉTODO QUE FALTABA)
+  String? validatePeriodo(String? periodoId) {
+    if (periodoId == null) {
+      return 'Por favor selecciona un período';
+    }
+    return null;
+  }
+
   // Formatear fecha
   String formatDate(DateTime date) {
     return '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year}';
@@ -131,6 +155,18 @@ class EventosService {
     return events.where((event) {
       final data = event.data() as Map<String, dynamic>;
       return data['carrera'] == filtroCarrera;
+    }).toList();
+  }
+
+  // Filtrar eventos por período
+  List<QueryDocumentSnapshot> filterByPeriodo(
+    List<QueryDocumentSnapshot> events,
+    String? filtroPeriodo,
+  ) {
+    if (filtroPeriodo == null) return events;
+    return events.where((event) {
+      final data = event.data() as Map<String, dynamic>;
+      return data['periodoId'] == filtroPeriodo;
     }).toList();
   }
 }

@@ -233,15 +233,6 @@ class _RegistroEstudiantesScreenState extends State<RegistroEstudiantesScreen>
     if (!_formKey.currentState!.validate()) {
       return;
     }
-
-    if (_selectedModoContrato == null) {
-      _showMessage('Por favor selecciona el modo de contrato');
-      return;
-    }
-    if (_selectedModalidadEstudio == null) {
-      _showMessage('Por favor selecciona la modalidad de estudio');
-      return;
-    }
     if (_selectedFacultad == null) {
       _showMessage('Por favor selecciona una facultad');
       return;
@@ -250,23 +241,12 @@ class _RegistroEstudiantesScreenState extends State<RegistroEstudiantesScreen>
       _showMessage('Por favor selecciona una carrera');
       return;
     }
-    if (_selectedCiclo == null) {
-      _showMessage('Por favor selecciona el ciclo');
-      return;
-    }
-    if (_selectedGrupo == null) {
-      _showMessage('Por favor selecciona el grupo');
-      return;
-    }
-
     final fullName =
         '${_nombresController.text.trim()} ${_apellidosController.text.trim()}';
     final username = _usernameController.text.trim().toLowerCase();
-
     setState(() {
       _isLoading = true;
     });
-
     try {
       final success = await PrefsHelper.createStudentAccountWithUsername(
         email: _correoController.text.trim(),
@@ -282,7 +262,6 @@ class _RegistroEstudiantesScreenState extends State<RegistroEstudiantesScreen>
         grupo: _selectedGrupo,
         celular: _celularController.text.trim(),
       );
-
       if (success) {
         _showSuccessDialog(
           username,
@@ -296,7 +275,6 @@ class _RegistroEstudiantesScreenState extends State<RegistroEstudiantesScreen>
     } catch (e) {
       _showMessage('Error creando estudiante: $e');
     }
-
     setState(() {
       _isLoading = false;
     });
@@ -727,8 +705,6 @@ class _RegistroEstudiantesScreenState extends State<RegistroEstudiantesScreen>
                                       controller: _usernameController,
                                       label: 'Usuario',
                                       icon: Icons.account_circle,
-                                      helperText:
-                                          'Nombre de usuario para iniciar sesión',
                                       hintText: 'Ej: juan.perez',
                                       onChanged: (value) {
                                         final cleaned = _cleanUsername(value);
@@ -764,15 +740,10 @@ class _RegistroEstudiantesScreenState extends State<RegistroEstudiantesScreen>
                                       label: 'Documento (DNI)',
                                       icon: Icons.credit_card,
                                       keyboardType: TextInputType.number,
-                                      helperText:
-                                          'La contraseña inicial será el DNI',
                                       validator: (value) {
                                         if (value == null ||
                                             value.trim().isEmpty) {
                                           return 'El documento es requerido';
-                                        }
-                                        if (value.trim().length != 8) {
-                                          return 'El DNI debe tener 8 dígitos';
                                         }
                                         return null;
                                       },
@@ -791,17 +762,14 @@ class _RegistroEstudiantesScreenState extends State<RegistroEstudiantesScreen>
                                       label: 'Correo electrónico',
                                       icon: Icons.email,
                                       keyboardType: TextInputType.emailAddress,
-                                      helperText:
-                                          'Personal o institucional (@upeu.edu.pe)',
                                       validator: (value) {
-                                        if (value == null ||
-                                            value.trim().isEmpty) {
-                                          return 'El correo es requerido';
-                                        }
-                                        if (!RegExp(
-                                          r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$',
-                                        ).hasMatch(value)) {
-                                          return 'Ingresa un correo válido';
+                                        if (value != null &&
+                                            value.trim().isNotEmpty) {
+                                          if (!RegExp(
+                                            r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$',
+                                          ).hasMatch(value)) {
+                                            return 'Ingresa un correo válido';
+                                          }
                                         }
                                         return null;
                                       },
@@ -813,12 +781,11 @@ class _RegistroEstudiantesScreenState extends State<RegistroEstudiantesScreen>
                                       icon: Icons.phone,
                                       keyboardType: TextInputType.phone,
                                       validator: (value) {
-                                        if (value == null ||
-                                            value.trim().isEmpty) {
-                                          return 'El celular es requerido';
-                                        }
-                                        if (value.trim().length != 9) {
-                                          return 'El celular debe tener 9 dígitos';
+                                        if (value != null &&
+                                            value.trim().isNotEmpty) {
+                                          if (value.trim().length != 9) {
+                                            return 'El celular debe tener 9 dígitos';
+                                          }
                                         }
                                         return null;
                                       },
@@ -836,12 +803,8 @@ class _RegistroEstudiantesScreenState extends State<RegistroEstudiantesScreen>
                                       controller: _codigoEstudianteController,
                                       label: 'Código estudiante',
                                       icon: Icons.badge,
-                                      helperText: 'Ej: 202320800',
+                                      hintText: 'Ej: 202320800',
                                       validator: (value) {
-                                        if (value == null ||
-                                            value.trim().isEmpty) {
-                                          return 'El código es requerido';
-                                        }
                                         return null;
                                       },
                                     ),

@@ -22,10 +22,8 @@ class PeriodosHelper {
         return false;
       }
 
-      // Si se marca como activo, desactivar todos los demás períodos
-      if (activo) {
-        await _desactivarTodosPeriodos();
-      }
+      // ✅ CAMBIADO: Ya NO se desactivan los demás períodos
+      // Se permite que múltiples períodos estén activos
 
       // Crear el período
       await _firestore.collection('periodos').add({
@@ -63,26 +61,62 @@ class PeriodosHelper {
     }
   }
 
-  // Obtener el período activo
-  static Future<Map<String, dynamic>?> getPeriodoActivo() async {
+  // ✅ NUEVO: Obtener solo períodos activos
+  static Future<List<Map<String, dynamic>>> getPeriodosActivos() async {
     try {
-      final periodoQuery = await _firestore
+      final periodosQuery = await _firestore
           .collection('periodos')
           .where('activo', isEqualTo: true)
-          .limit(1)
+          // ❌ REMOVIDO: .orderBy('createdAt', descending: true)
           .get();
 
-      if (periodoQuery.docs.isNotEmpty) {
-        final doc = periodoQuery.docs.first;
+      // Ordenar manualmente en memoria
+      final periodos = periodosQuery.docs.map((doc) {
         final data = doc.data();
         data['id'] = doc.id;
         return data;
-      }
-      return null;
+      }).toList();
+
+      // Ordenar por createdAt si existe
+      periodos.sort((a, b) {
+        final aTime = a['createdAt'] as Timestamp?;
+        final bTime = b['createdAt'] as Timestamp?;
+        if (aTime == null || bTime == null) return 0;
+        return bTime.compareTo(aTime); // Descendente
+      });
+
+      return periodos;
     } catch (e) {
-      print('Error obteniendo período activo: $e');
+      print('Error obteniendo períodos activos: $e');
+      return [];
+    }
+  }
+
+  // ✅ MODIFICADO: Obtener UN período activo (mantener por compatibilidad)
+  static Future<Map<String, dynamic>?> getPeriodoActivo() async {
+    try {
+      final querySnapshot = await _firestore
+          .collection('periodos')
+          .where('activo', isEqualTo: true)
+          .orderBy('createdAt', descending: true)
+          .limit(1)
+          .get();
+
+      if (querySnapshot.docs.isEmpty) return null;
+
+      final doc = querySnapshot.docs.first;
+      return {'id': doc.id, ...doc.data()};
+    } catch (e) {
+      print('Error al obtener período activo: $e');
       return null;
     }
+  }
+
+  static Stream<QuerySnapshot> getPeriodosStream() {
+    return _firestore
+        .collection('periodos')
+        .orderBy('fechaInicio', descending: true)
+        .snapshots();
   }
 
   // Actualizar un período
@@ -122,10 +156,8 @@ class PeriodosHelper {
       }
 
       if (activo != null) {
-        // Si se activa este período, desactivar todos los demás
-        if (activo) {
-          await _desactivarTodosPeriodos();
-        }
+        // ✅ CAMBIADO: Ya NO se desactivan los demás períodos
+        // Simplemente se actualiza el estado de este período
         updateData['activo'] = activo;
       }
 
@@ -138,10 +170,9 @@ class PeriodosHelper {
     }
   }
 
-  // Activar un período (desactiva todos los demás)
+  // ✅ MODIFICADO: Activar un período (ya NO desactiva los demás)
   static Future<bool> activarPeriodo(String periodoId) async {
     try {
-      await _desactivarTodosPeriodos();
       await _firestore.collection('periodos').doc(periodoId).update({
         'activo': true,
         'updatedAt': FieldValue.serverTimestamp(),
@@ -181,21 +212,7 @@ class PeriodosHelper {
     }
   }
 
-  // Desactivar todos los períodos (función auxiliar privada)
-  static Future<void> _desactivarTodosPeriodos() async {
-    try {
-      final periodosActivos = await _firestore
-          .collection('periodos')
-          .where('activo', isEqualTo: true)
-          .get();
-
-      for (var doc in periodosActivos.docs) {
-        await doc.reference.update({'activo': false});
-      }
-    } catch (e) {
-      print('Error desactivando períodos: $e');
-    }
-  }
+  // ✅ ELIMINADA: La función _desactivarTodosPeriodos ya no es necesaria
 
   // Buscar períodos por nombre o año
   static Future<List<Map<String, dynamic>>> searchPeriodos(
@@ -226,8 +243,8 @@ class PeriodosHelper {
     }
   }
 
-  // Verificar si hay un período activo
-  static Future<bool> hayPeriodoActivo() async {
+  // ✅ MODIFICADO: Verificar si hay períodos activos (plural)
+  static Future<bool> hayPeriodosActivos() async {
     try {
       final periodoQuery = await _firestore
           .collection('periodos')
@@ -237,8 +254,23 @@ class PeriodosHelper {
 
       return periodoQuery.docs.isNotEmpty;
     } catch (e) {
-      print('Error verificando período activo: $e');
+      print('Error verificando períodos activos: $e');
       return false;
+    }
+  }
+
+  // ✅ NUEVO: Contar cuántos períodos activos hay
+  static Future<int> contarPeriodosActivos() async {
+    try {
+      final periodoQuery = await _firestore
+          .collection('periodos')
+          .where('activo', isEqualTo: true)
+          .get();
+
+      return periodoQuery.docs.length;
+    } catch (e) {
+      print('Error contando períodos activos: $e');
+      return 0;
     }
   }
 }

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '/admin/logica/eventos_detalles.dart';
 import '/admin/logica/crear_eventos.dart';
+import '/admin/logica/periodos_helper.dart';
 
 class CrearEventosScreen extends StatefulWidget {
   const CrearEventosScreen({super.key});
@@ -19,19 +20,26 @@ class _CrearEventosScreenState extends State<CrearEventosScreen>
   String? _selectedCarrera;
   late AnimationController _fadeController;
   late Animation<double> _fadeAnimation;
+  String? _selectedPeriodoId;
+  String? _selectedPeriodoNombre;
+  List<Map<String, dynamic>> _periodos = [];
 
   @override
   void initState() {
     super.initState();
+
     _fadeController = AnimationController(
       duration: const Duration(milliseconds: 800),
       vsync: this,
     );
+
     _fadeAnimation = CurvedAnimation(
       parent: _fadeController,
       curve: Curves.easeIn,
     );
+
     _fadeController.forward();
+    _loadPeriodos();
   }
 
   @override
@@ -89,6 +97,17 @@ class _CrearEventosScreenState extends State<CrearEventosScreen>
     );
   }
 
+  Future<void> _loadPeriodos() async {
+    final periodos = await PeriodosHelper.getPeriodosActivos();
+    setState(() {
+      _periodos = periodos;
+      if (periodos.isNotEmpty) {
+        _selectedPeriodoId = periodos.first['id'];
+        _selectedPeriodoNombre = periodos.first['nombre'];
+      }
+    });
+  }
+
   Future<void> _createEvent() async {
     final nameError = _eventosService.validateEventName(
       _eventNameController.text,
@@ -110,6 +129,12 @@ class _CrearEventosScreenState extends State<CrearEventosScreen>
       return;
     }
 
+    final periodoError = _eventosService.validatePeriodo(_selectedPeriodoId);
+    if (periodoError != null) {
+      _showSnackBar(periodoError, isError: true);
+      return;
+    }
+
     setState(() {
       _isLoading = true;
     });
@@ -119,6 +144,8 @@ class _CrearEventosScreenState extends State<CrearEventosScreen>
         name: _eventNameController.text.trim(),
         facultad: _selectedFacultad!,
         carrera: _selectedCarrera!,
+        periodoId: _selectedPeriodoId!,
+        periodoNombre: _selectedPeriodoNombre!,
       );
 
       _eventNameController.clear();
@@ -180,7 +207,6 @@ class _CrearEventosScreenState extends State<CrearEventosScreen>
           child: Column(
             children: [
               const SizedBox(height: 20),
-              // Tarjeta principal de creación
               Container(
                 padding: const EdgeInsets.all(20.0),
                 margin: const EdgeInsets.symmetric(horizontal: 16.0),
@@ -203,7 +229,6 @@ class _CrearEventosScreenState extends State<CrearEventosScreen>
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    // Header con icono
                     Row(
                       children: [
                         Container(
@@ -245,7 +270,6 @@ class _CrearEventosScreenState extends State<CrearEventosScreen>
                     ),
                     const SizedBox(height: 24),
 
-                    // Campo de nombre
                     _buildTextField(
                       controller: _eventNameController,
                       label: 'Nombre del evento',
@@ -254,7 +278,6 @@ class _CrearEventosScreenState extends State<CrearEventosScreen>
                     ),
                     const SizedBox(height: 16),
 
-                    // Dropdown Facultad
                     _buildDropdown(
                       value: _selectedFacultad,
                       label: 'Facultad',
@@ -269,7 +292,6 @@ class _CrearEventosScreenState extends State<CrearEventosScreen>
                     ),
                     const SizedBox(height: 16),
 
-                    // Dropdown Carrera
                     _buildDropdown(
                       value: _selectedCarrera,
                       label: 'Carrera/Escuela Profesional',
@@ -286,8 +308,58 @@ class _CrearEventosScreenState extends State<CrearEventosScreen>
                             }
                           : null,
                     ),
+                    const SizedBox(height: 16),
 
-                    // Mensaje de ayuda
+                    _buildDropdown(
+                      value: _selectedPeriodoId,
+                      label: 'Período Académico',
+                      icon: Icons.calendar_month,
+                      items: _periodos.map((p) => p['id'] as String).toList(),
+                      itemLabels: _periodos.map((p) {
+                        final nombre = p['nombre'] as String;
+                        return nombre;
+                      }).toList(),
+                      onChanged: (String? newValue) {
+                        setState(() {
+                          _selectedPeriodoId = newValue;
+                          _selectedPeriodoNombre = _periodos.firstWhere(
+                            (p) => p['id'] == newValue,
+                          )['nombre'];
+                        });
+                      },
+                    ),
+
+                    if (_periodos.isEmpty)
+                      Container(
+                        margin: const EdgeInsets.only(top: 12),
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFFEBEE),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: const Color(0xFFE53935)),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(
+                              Icons.warning_amber,
+                              size: 20,
+                              color: Color(0xFFE53935),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                'No hay períodos activos. Activa un período primero.',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: Colors.red.shade900,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+
                     if (_selectedFacultad == null)
                       Container(
                         margin: const EdgeInsets.only(top: 12),
@@ -320,7 +392,6 @@ class _CrearEventosScreenState extends State<CrearEventosScreen>
                       ),
                     const SizedBox(height: 24),
 
-                    // Botón crear evento
                     _buildPrimaryButton(
                       onPressed: _isLoading ? null : _createEvent,
                       text: 'Crear Evento',
@@ -332,7 +403,6 @@ class _CrearEventosScreenState extends State<CrearEventosScreen>
               ),
               const SizedBox(height: 20),
 
-              // Botón ver todos los eventos
               Container(
                 margin: const EdgeInsets.symmetric(horizontal: 16.0),
                 child: StreamBuilder<QuerySnapshot>(
@@ -401,6 +471,7 @@ class _CrearEventosScreenState extends State<CrearEventosScreen>
     required String label,
     required IconData icon,
     required List<String> items,
+    List<String>? itemLabels,
     required void Function(String?)? onChanged,
   }) {
     return Container(
@@ -432,16 +503,16 @@ class _CrearEventosScreenState extends State<CrearEventosScreen>
             vertical: 14,
           ),
         ),
-        items: items.map((String item) {
+        items: List.generate(items.length, (index) {
           return DropdownMenuItem<String>(
-            value: item,
+            value: items[index],
             child: Text(
-              item,
+              itemLabels != null ? itemLabels[index] : items[index],
               style: const TextStyle(fontSize: 14),
               overflow: TextOverflow.ellipsis,
             ),
           );
-        }).toList(),
+        }),
         onChanged: onChanged,
       ),
     );
@@ -558,7 +629,7 @@ class _CrearEventosScreenState extends State<CrearEventosScreen>
   }
 }
 
-// LISTA DE EVENTOS CON MEJORAS
+// LISTA DE EVENTOS CON FILTRO DE PERÍODOS
 class ListaEventosScreen extends StatefulWidget {
   final Map<String, List<String>> facultadesCarreras;
 
@@ -573,6 +644,8 @@ class _ListaEventosScreenState extends State<ListaEventosScreen>
   final EventosService _eventosService = EventosService();
   String? _filtroFacultad;
   String? _filtroCarrera;
+  String? _filtroPeriodo; // ← NUEVO
+  List<Map<String, dynamic>> _periodos = []; // ← NUEVO
   late AnimationController _animationController;
 
   @override
@@ -583,12 +656,21 @@ class _ListaEventosScreenState extends State<ListaEventosScreen>
       vsync: this,
     );
     _animationController.forward();
+    _loadPeriodos(); // ← NUEVO
   }
 
   @override
   void dispose() {
     _animationController.dispose();
     super.dispose();
+  }
+
+  // ← NUEVO MÉTODO
+  Future<void> _loadPeriodos() async {
+    final periodos = await PeriodosHelper.getPeriodosActivos();
+    setState(() {
+      _periodos = periodos;
+    });
   }
 
   void _navigateToEventDetails(String eventId, Map<String, dynamic> eventData) {
@@ -915,12 +997,15 @@ class _ListaEventosScreenState extends State<ListaEventosScreen>
                       ),
                     ),
                     const Spacer(),
-                    if (_filtroFacultad != null || _filtroCarrera != null)
+                    if (_filtroFacultad != null ||
+                        _filtroCarrera != null ||
+                        _filtroPeriodo != null) // ← MODIFICADO
                       TextButton.icon(
                         onPressed: () {
                           setState(() {
                             _filtroFacultad = null;
                             _filtroCarrera = null;
+                            _filtroPeriodo = null; // ← AGREGADO
                           });
                         },
                         icon: const Icon(Icons.clear, size: 16),
@@ -1011,6 +1096,44 @@ class _ListaEventosScreenState extends State<ListaEventosScreen>
                         }
                       : null,
                 ),
+                const SizedBox(height: 12),
+                // ← NUEVO DROPDOWN DE PERÍODOS
+                DropdownButtonFormField<String>(
+                  value: _filtroPeriodo,
+                  isExpanded: true,
+                  decoration: InputDecoration(
+                    labelText: 'Período Académico',
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
+                    prefixIcon: const Icon(Icons.calendar_month),
+                  ),
+                  items: [
+                    const DropdownMenuItem<String>(
+                      value: null,
+                      child: Text('Todos'),
+                    ),
+                    ..._periodos.map((periodo) {
+                      return DropdownMenuItem<String>(
+                        value: periodo['id'],
+                        child: Text(
+                          periodo['nombre'],
+                          style: const TextStyle(fontSize: 12),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      );
+                    }),
+                  ],
+                  onChanged: (String? newValue) {
+                    setState(() {
+                      _filtroPeriodo = newValue;
+                    });
+                  },
+                ),
               ],
             ),
           ),
@@ -1064,6 +1187,14 @@ class _ListaEventosScreenState extends State<ListaEventosScreen>
                   _filtroCarrera,
                 );
 
+                // ← NUEVO FILTRO POR PERÍODO
+                if (_filtroPeriodo != null) {
+                  events = events.where((event) {
+                    final eventData = event.data() as Map<String, dynamic>;
+                    return eventData['periodoId'] == _filtroPeriodo;
+                  }).toList();
+                }
+
                 if (events.isEmpty) {
                   return Center(
                     child: Column(
@@ -1083,7 +1214,9 @@ class _ListaEventosScreenState extends State<ListaEventosScreen>
                         ),
                         const SizedBox(height: 16),
                         Text(
-                          _filtroFacultad != null || _filtroCarrera != null
+                          _filtroFacultad != null ||
+                                  _filtroCarrera != null ||
+                                  _filtroPeriodo != null
                               ? 'No hay eventos con estos filtros'
                               : 'No hay eventos creados',
                           style: TextStyle(

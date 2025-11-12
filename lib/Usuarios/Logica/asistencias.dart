@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '/prefs_helper.dart';
+import '/admin/logica/periodos_helper.dart';
 import 'dart:math' as math;
 
 class AsistenciasScreen extends StatefulWidget {
@@ -24,8 +25,7 @@ class _AsistenciasScreenState extends State<AsistenciasScreen>
 
   // Variables para el filtro de periodo
   String? _periodoSeleccionado;
-  List<String> _periodosDisponibles = [];
-  bool _mostrarPeriodos = false;
+  List<Map<String, dynamic>> _periodosDisponibles = [];
   String? _eventoSeleccionado;
   List<Map<String, dynamic>> _eventosDisponibles = [];
 
@@ -70,62 +70,60 @@ class _AsistenciasScreenState extends State<AsistenciasScreen>
     setState(() {
       _eventosDisponibles = eventosMap.values.toList()
         ..sort((a, b) => (a['name'] as String).compareTo(b['name'] as String));
-
-      // Si no hay evento seleccionado y hay eventos disponibles, no seleccionar ninguno por defecto
-      if (_eventoSeleccionado == null && _eventosDisponibles.isNotEmpty) {
-        _eventoSeleccionado = null; // El usuario debe seleccionar manualmente
-      }
     });
   }
 
-  // Determinar el periodo académico basado en una fecha
-  String _getPeriodoFromDate(DateTime date) {
-    final year = date.year;
-    final month = date.month;
+  // Cargar períodos activos de la base de datos
+  Future<void> _cargarPeriodosActivos() async {
+    try {
+      final periodos = await PeriodosHelper.getPeriodosActivos();
 
-    // 2025-I: Marzo (3) a Julio (7)
-    // 2025-II: Agosto (8) a Diciembre (12)
+      setState(() {
+        _periodosDisponibles = periodos;
+        // Seleccionar el primer período activo si no hay ninguno seleccionado
+        if (_periodoSeleccionado == null && _periodosDisponibles.isNotEmpty) {
+          _periodoSeleccionado = _periodosDisponibles.first['id'];
+        }
+      });
 
-    if (month >= 3 && month <= 7) {
-      return '$year-I';
-    } else if (month >= 8 && month <= 12) {
-      return '$year-II';
-    } else {
-      // Para otros meses (enero, febrero), asignar al periodo anterior
-      return '${year - 1}-II';
+      _filtrarAsistencias();
+    } catch (e) {
+      print('Error cargando períodos activos: $e');
+      _showSnackBar('Error al cargar períodos: $e', isError: true);
     }
   }
 
-  // Calcular periodos disponibles de las asistencias
-  void _calcularPeriodosDisponibles() {
-    final Set<String> periodos = {};
+  // Verificar si una asistencia pertenece a un período
+  bool _asistenciaPerteneceAPeriodo(
+    Map<String, dynamic> asistencia,
+    Map<String, dynamic> periodo,
+  ) {
+    final timestamp = (asistencia['timestamp'] as Timestamp?)?.toDate();
+    if (timestamp == null) return false;
 
-    for (var asistencia in _misAsistencias) {
-      final timestamp = (asistencia['timestamp'] as Timestamp?)?.toDate();
-      if (timestamp != null) {
-        periodos.add(_getPeriodoFromDate(timestamp));
-      }
-    }
+    final fechaInicio = (periodo['fechaInicio'] as Timestamp?)?.toDate();
+    final fechaFin = (periodo['fechaFin'] as Timestamp?)?.toDate();
 
-    setState(() {
-      _periodosDisponibles = periodos.toList()..sort((a, b) => b.compareTo(a));
-      // Si no hay periodo seleccionado, seleccionar el más reciente
-      if (_periodoSeleccionado == null && _periodosDisponibles.isNotEmpty) {
-        _periodoSeleccionado = _periodosDisponibles.first;
-      }
-    });
+    if (fechaInicio == null || fechaFin == null) return false;
+
+    return timestamp.isAfter(fechaInicio.subtract(const Duration(days: 1))) &&
+        timestamp.isBefore(fechaFin.add(const Duration(days: 1)));
   }
 
-  void _filtrarAsistenciasPorPeriodo() {
+  void _filtrarAsistencias() {
     setState(() {
       _asistenciasFiltradas = _misAsistencias.where((asistencia) {
         // Filtro por periodo
         bool cumplePeriodo = true;
         if (_periodoSeleccionado != null) {
-          final timestamp = (asistencia['timestamp'] as Timestamp?)?.toDate();
-          if (timestamp == null) return false;
-          cumplePeriodo =
-              _getPeriodoFromDate(timestamp) == _periodoSeleccionado;
+          final periodo = _periodosDisponibles.firstWhere(
+            (p) => p['id'] == _periodoSeleccionado,
+            orElse: () => {},
+          );
+
+          if (periodo.isNotEmpty) {
+            cumplePeriodo = _asistenciaPerteneceAPeriodo(asistencia, periodo);
+          }
         }
 
         // Filtro por evento
@@ -224,9 +222,8 @@ class _AsistenciasScreenState extends State<AsistenciasScreen>
         _misAsistencias = asistenciasList;
       });
 
-      _calcularPeriodosDisponibles();
+      await _cargarPeriodosActivos();
       _calcularEventosDisponibles();
-      _filtrarAsistenciasPorPeriodo();
 
       _showSnackBar('Se cargaron ${_misAsistencias.length} asistencia(s)');
     } catch (e) {
@@ -355,7 +352,7 @@ class _AsistenciasScreenState extends State<AsistenciasScreen>
             child: Icon(
               _getIconByCategoria(categoria),
               color: Colors.white,
-              size: 22, // Reducido de 24 a 22
+              size: 22,
               shadows: [
                 Shadow(
                   color: Colors.black.withOpacity(0.3),
@@ -367,7 +364,7 @@ class _AsistenciasScreenState extends State<AsistenciasScreen>
           ),
           if (timestamp != null)
             Positioned(
-              bottom: 6, // Reducido de 8 a 6
+              bottom: 6,
               left: 0,
               right: 0,
               child: Center(
@@ -375,7 +372,7 @@ class _AsistenciasScreenState extends State<AsistenciasScreen>
                   '${timestamp.day}/${timestamp.month}',
                   style: const TextStyle(
                     color: Colors.white,
-                    fontSize: 9, // Reducido de 10 a 9
+                    fontSize: 9,
                     fontWeight: FontWeight.bold,
                     shadows: [
                       Shadow(
@@ -491,7 +488,12 @@ class _AsistenciasScreenState extends State<AsistenciasScreen>
               spacing: 8,
               runSpacing: 8,
               children: _periodosDisponibles
-                  .map((periodo) => _buildPeriodoChip(periodo, periodo))
+                  .map(
+                    (periodo) => _buildPeriodoChip(
+                      periodo['nombre'] ?? 'Sin nombre',
+                      periodo['id'],
+                    ),
+                  )
                   .toList(),
             ),
           ],
@@ -547,7 +549,7 @@ class _AsistenciasScreenState extends State<AsistenciasScreen>
         setState(() {
           _periodoSeleccionado = valor;
         });
-        _filtrarAsistenciasPorPeriodo();
+        _filtrarAsistencias();
       },
       borderRadius: BorderRadius.circular(20),
       child: Container(
@@ -637,7 +639,7 @@ class _AsistenciasScreenState extends State<AsistenciasScreen>
             setState(() {
               _eventoSeleccionado = value;
             });
-            _filtrarAsistenciasPorPeriodo();
+            _filtrarAsistencias();
           },
           dropdownColor: Colors.white,
           borderRadius: BorderRadius.circular(12),
@@ -648,7 +650,7 @@ class _AsistenciasScreenState extends State<AsistenciasScreen>
   }
 
   Widget _buildColeccionSellos() {
-    const int totalSellos = 10; // Total de espacios para sellos
+    const int totalSellos = 10;
 
     return AnimatedOpacity(
       opacity: _isLoadingAsistencias ? 0.0 : 1.0,
@@ -700,7 +702,11 @@ class _AsistenciasScreenState extends State<AsistenciasScreen>
                       ),
                       if (_periodoSeleccionado != null)
                         Text(
-                          _periodoSeleccionado!,
+                          _periodosDisponibles.firstWhere(
+                                (p) => p['id'] == _periodoSeleccionado,
+                                orElse: () => {'nombre': ''},
+                              )['nombre'] ??
+                              '',
                           style: TextStyle(
                             fontSize: 12,
                             color: Colors.grey.shade600,
@@ -742,7 +748,6 @@ class _AsistenciasScreenState extends State<AsistenciasScreen>
               ),
               itemCount: totalSellos,
               itemBuilder: (context, index) {
-                // Si hay asistencia en esta posición, mostrar sello con color
                 if (index < _asistenciasFiltradas.length) {
                   return TweenAnimationBuilder(
                     tween: Tween<double>(begin: 0, end: 1),
@@ -761,7 +766,6 @@ class _AsistenciasScreenState extends State<AsistenciasScreen>
                     },
                   );
                 } else {
-                  // Mostrar espacio vacío en gris
                   return TweenAnimationBuilder(
                     tween: Tween<double>(begin: 0, end: 1),
                     duration: Duration(milliseconds: 300 + (index * 50)),
@@ -836,6 +840,14 @@ class _AsistenciasScreenState extends State<AsistenciasScreen>
   }
 
   void _mostrarTodosLosSellos() {
+    final periodoNombre = _periodoSeleccionado != null
+        ? _periodosDisponibles.firstWhere(
+                (p) => p['id'] == _periodoSeleccionado,
+                orElse: () => {'nombre': 'Todos los Sellos'},
+              )['nombre'] ??
+              'Todos los Sellos'
+        : 'Todos los Sellos';
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -887,7 +899,7 @@ class _AsistenciasScreenState extends State<AsistenciasScreen>
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                _periodoSeleccionado ?? 'Todos los Sellos',
+                                periodoNombre,
                                 style: const TextStyle(
                                   fontSize: 20,
                                   fontWeight: FontWeight.bold,
@@ -1182,7 +1194,7 @@ class _AsistenciasScreenState extends State<AsistenciasScreen>
                       const SizedBox(height: 16),
                       Text(
                         _periodoSeleccionado != null
-                            ? 'No hay asistencias en $_periodoSeleccionado'
+                            ? 'No hay asistencias en este período'
                             : 'No tienes asistencias registradas',
                         textAlign: TextAlign.center,
                         style: const TextStyle(
