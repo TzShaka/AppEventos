@@ -5,6 +5,7 @@ class EventosService {
 
   // Estructura de facultades y carreras
   final Map<String, List<String>> facultadesCarreras = {
+    'Universidad Peruana Unión': [],
     'Facultad de Ciencias Empresariales': [
       'Administración',
       'Contabilidad',
@@ -29,18 +30,22 @@ class EventosService {
     ],
   };
 
+  bool requiereCarrera(String? facultad) {
+    if (facultad == null) return true;
+    return facultad != 'Universidad Peruana Unión';
+  }
+
   // Crear nuevo evento con período
   Future<void> createEvent({
     required String name,
     required String facultad,
-    required String carrera,
+    String? carrera,
     required String periodoId,
     required String periodoNombre,
   }) async {
-    await _firestore.collection('events').add({
+    final eventData = {
       'name': name,
       'facultad': facultad,
-      'carrera': carrera,
       'periodoId': periodoId,
       'periodoNombre': periodoNombre,
       'createdAt': FieldValue.serverTimestamp(),
@@ -49,7 +54,16 @@ class EventosService {
       'hora': null,
       'lugar': '',
       'ponentes': [],
-    });
+    };
+
+    // Solo agregar carrera si se proporciona
+    if (carrera != null && carrera.isNotEmpty) {
+      eventData['carrera'] = carrera;
+    } else {
+      eventData['carrera'] = 'General'; // Valor por defecto para UPeU
+    }
+
+    await _firestore.collection('events').add(eventData);
   }
 
   // Editar evento CON PERÍODO
@@ -57,16 +71,22 @@ class EventosService {
     required String eventId,
     required String name,
     required String facultad,
-    required String carrera,
+    String? carrera,
     String? periodoId,
     String? periodoNombre,
   }) async {
     final updateData = {
       'name': name,
       'facultad': facultad,
-      'carrera': carrera,
       'updatedAt': FieldValue.serverTimestamp(),
     };
+
+    // Solo agregar carrera si se proporciona o si no es UPeU
+    if (carrera != null && carrera.isNotEmpty) {
+      updateData['carrera'] = carrera;
+    } else if (facultad == 'Universidad Peruana Unión') {
+      updateData['carrera'] = 'General';
+    }
 
     // Solo agregar período si se proporciona
     if (periodoId != null) {
@@ -113,15 +133,18 @@ class EventosService {
     return null;
   }
 
-  // Validar carrera
-  String? validateCarrera(String? carrera) {
+  // ✅ Validar carrera (con 2 parámetros)
+  String? validateCarrera(String? carrera, String? facultad) {
+    if (facultad == 'Universidad Peruana Unión') {
+      return null;
+    }
     if (carrera == null) {
       return 'Por favor selecciona una carrera';
     }
     return null;
   }
 
-  // ✅ VALIDAR PERÍODO (MÉTODO QUE FALTABA)
+  // Validar período
   String? validatePeriodo(String? periodoId) {
     if (periodoId == null) {
       return 'Por favor selecciona un período';
@@ -146,15 +169,26 @@ class EventosService {
     }).toList();
   }
 
-  // Filtrar eventos por carrera
+  // ✅ MEJORADO: Filtrar eventos por carrera
+  // Ahora maneja correctamente el caso de "General" para UPeU
   List<QueryDocumentSnapshot> filterByCarrera(
     List<QueryDocumentSnapshot> events,
     String? filtroCarrera,
   ) {
     if (filtroCarrera == null) return events;
+
     return events.where((event) {
       final data = event.data() as Map<String, dynamic>;
-      return data['carrera'] == filtroCarrera;
+      final eventCarrera = data['carrera'];
+
+      // Si el filtro es "General", solo mostrar eventos de UPeU
+      if (filtroCarrera == 'General') {
+        return eventCarrera == 'General' &&
+            data['facultad'] == 'Universidad Peruana Unión';
+      }
+
+      // Para otras carreras, comparación normal
+      return eventCarrera == filtroCarrera;
     }).toList();
   }
 

@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '/admin/logica/generar_qr.dart';
-import 'proyectos_categoria_screen.dart'; // Importa la nueva pantalla
+import 'proyectos_categoria_screen.dart';
 
 class GenerarQRScreen extends StatefulWidget {
   final VoidCallback? logoutCallback;
@@ -45,8 +45,16 @@ class _GenerarQRScreenState extends State<GenerarQRScreen>
   }
 
   Future<void> _buscarEventos() async {
-    if (_selectedFacultad == null || _selectedCarrera == null) {
-      _showSnackBar('Selecciona facultad y carrera primero', isError: true);
+    // ✅ Validación actualizada - carrera ya no es obligatoria
+    if (_selectedFacultad == null) {
+      _showSnackBar('Selecciona una facultad primero', isError: true);
+      return;
+    }
+
+    // ✅ Validar carrera solo si se requiere
+    if (_controller.requiereCarrera(_selectedFacultad) &&
+        _selectedCarrera == null) {
+      _showSnackBar('Selecciona una carrera primero', isError: true);
       return;
     }
 
@@ -58,9 +66,10 @@ class _GenerarQRScreenState extends State<GenerarQRScreen>
     });
 
     try {
+      // ✅ Llamada actualizada - carrera es opcional
       final eventos = await _controller.buscarEventos(
         facultad: _selectedFacultad!,
-        carrera: _selectedCarrera!,
+        carrera: _selectedCarrera,
       );
 
       setState(() {
@@ -68,7 +77,7 @@ class _GenerarQRScreenState extends State<GenerarQRScreen>
       });
 
       if (_eventos.isEmpty) {
-        _showSnackBar('No se encontraron eventos para esta carrera');
+        _showSnackBar('No se encontraron eventos para esta selección');
       } else {
         _showSnackBar('Se encontraron ${_eventos.length} evento(s)');
       }
@@ -126,7 +135,9 @@ class _GenerarQRScreenState extends State<GenerarQRScreen>
           eventId: _selectedEventId!,
           eventName: _selectedEventName!,
           facultad: _selectedFacultad!,
-          carrera: _selectedCarrera!,
+          carrera:
+              _selectedCarrera ??
+              'General', // ✅ Usar "General" si no hay carrera
           categoria: categoria,
         ),
       ),
@@ -342,33 +353,73 @@ class _GenerarQRScreenState extends State<GenerarQRScreen>
                         });
                       },
                     ),
-                    const SizedBox(height: 16),
-                    _buildCustomDropdown(
-                      value: _selectedCarrera,
-                      label: 'Escuela Profesional',
-                      icon: Icons.menu_book_rounded,
-                      items: _selectedFacultad != null
-                          ? _controller.obtenerCarrerasPorFacultad(
-                              _selectedFacultad!,
-                            )
-                          : [],
-                      onChanged: _selectedFacultad != null
-                          ? (String? newValue) {
-                              setState(() {
-                                _selectedCarrera = newValue;
-                                _selectedEventId = null;
-                                _selectedEventName = null;
-                                _eventos.clear();
-                                _categorias.clear();
-                              });
-                            }
-                          : null,
-                    ),
+
+                    // ✅ Solo mostrar carrera si se requiere
+                    if (_controller.requiereCarrera(_selectedFacultad)) ...[
+                      const SizedBox(height: 16),
+                      _buildCustomDropdown(
+                        value: _selectedCarrera,
+                        label: 'Escuela Profesional',
+                        icon: Icons.menu_book_rounded,
+                        items: _selectedFacultad != null
+                            ? _controller.obtenerCarrerasPorFacultad(
+                                _selectedFacultad!,
+                              )
+                            : [],
+                        onChanged: _selectedFacultad != null
+                            ? (String? newValue) {
+                                setState(() {
+                                  _selectedCarrera = newValue;
+                                  _selectedEventId = null;
+                                  _selectedEventName = null;
+                                  _eventos.clear();
+                                  _categorias.clear();
+                                });
+                              }
+                            : null,
+                      ),
+                    ],
+
+                    // ✅ Información adicional cuando se selecciona UPeU
+                    if (_selectedFacultad == 'Universidad Peruana Unión')
+                      Container(
+                        margin: const EdgeInsets.only(top: 16),
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFE3F2FD),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: const Color(0xFF2196F3)),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.info_outline,
+                              size: 20,
+                              color: Colors.blue.shade700,
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                'Eventos generales de la universidad',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: Colors.blue.shade900,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+
                     const SizedBox(height: 20),
                     _buildAnimatedButton(
                       onPressed:
-                          (_selectedFacultad != null &&
-                              _selectedCarrera != null)
+                          _selectedFacultad != null &&
+                              (_selectedCarrera != null ||
+                                  !_controller.requiereCarrera(
+                                    _selectedFacultad,
+                                  ))
                           ? _buscarEventos
                           : null,
                       isLoading: _isLoadingEvents,

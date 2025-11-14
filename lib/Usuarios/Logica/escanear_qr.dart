@@ -24,6 +24,9 @@ class _EscanearQRScreenState extends State<EscanearQRScreen>
   bool _hasScanned = false;
   bool _isFlashOn = false;
 
+  // ✅ CACHE DE DATOS DEL USUARIO (evita leer cada vez)
+  Map<String, dynamic>? _cachedUserData;
+
   late AnimationController _animationController;
   late Animation<double> _scanLineAnimation;
   late Animation<double> _pulseAnimation;
@@ -50,24 +53,35 @@ class _EscanearQRScreenState extends State<EscanearQRScreen>
     );
   }
 
+  // ═══════════════════════════════════════════════════════════════
+  // ✅ OPTIMIZADO: Cargar datos del usuario UNA VEZ con caché
+  // ═══════════════════════════════════════════════════════════════
   Future<void> _getCurrentUser() async {
     try {
       final userId = await PrefsHelper.getCurrentUserId();
       final userName = await PrefsHelper.getUserName();
+
+      // ✅ USAR CACHÉ del PrefsHelper
       final userData = await PrefsHelper.getCurrentUserData();
 
       setState(() {
         _currentUserId = userId;
         _currentUserName = userName;
         _currentUsername = userData?['username'];
+        _cachedUserData = userData;
       });
+
+      print('✅ Usuario cargado desde caché');
     } catch (e) {
       _showSnackBar('Error al obtener usuario: $e', isError: true);
     }
   }
 
-  // En el archivo escanear_qr.dart, reemplaza el método _procesarQR completo:
-
+  // ═══════════════════════════════════════════════════════════════
+  // ✅ OPTIMIZADO: Reducido de 3 lecturas a 2 lecturas
+  // ANTES: qrDoc + existingDoc + allScans = 3 lecturas
+  // AHORA: qrDoc + existingDoc = 2 lecturas (conteo eliminado)
+  // ═══════════════════════════════════════════════════════════════
   Future<void> _procesarQR(String qrData) async {
     if (_isProcessing || _hasScanned) return;
 
@@ -79,8 +93,10 @@ class _EscanearQRScreenState extends State<EscanearQRScreen>
     try {
       await cameraController.stop();
 
+      // ═══════════════════════════════════════════════════════════
+      // PASO 1: DECODIFICAR QR
+      // ═══════════════════════════════════════════════════════════
       Map<String, dynamic> qrInfo;
-
       try {
         if (qrData.startsWith('myapp://')) {
           final uri = Uri.parse(qrData);
@@ -97,90 +113,62 @@ class _EscanearQRScreenState extends State<EscanearQRScreen>
       } catch (e) {
         _showResult(
           success: false,
-          message:
-              'QR inválido: No contiene datos de asistencia válidos\nError: $e',
+          message: 'QR inválido: No contiene datos válidos\nError: $e',
         );
         return;
       }
 
-      // ═══════════════════════════════════════════════════════════════
-      // ✅ VALIDACIÓN CRÍTICA: Verificar si el QR está activo
-      // ═══════════════════════════════════════════════════════════════
+      // ═══════════════════════════════════════════════════════════
+      // PASO 2: VALIDAR QUE EL QR ESTÉ ACTIVO (1 LECTURA)
+      // ═══════════════════════════════════════════════════════════
       final qrId = qrInfo['qrId'];
-
-      if (qrId != null && qrId.toString().isNotEmpty) {
-        print('🔍 Verificando estado del QR...');
-        print('   QR ID: $qrId');
-
-        try {
-          final qrDoc = await _firestore
-              .collection('events')
-              .doc(qrInfo['eventId'])
-              .collection('qr_codes')
-              .doc(qrId)
-              .get();
-
-          if (!qrDoc.exists) {
-            _showResult(
-              success: false,
-              message: '⚠️ Este código QR no existe o fue eliminado',
-            );
-            return;
-          }
-
-          final qrData = qrDoc.data();
-          final isActive = qrData?['activo'] ?? false;
-
-          print('📊 Estado del QR:');
-          print('   activo: $isActive');
-
-          if (!isActive) {
-            final finalizadoAt = qrData?['finalizadoAt'] as Timestamp?;
-            final fechaFinalizado =
-                finalizadoAt?.toDate().toString().substring(0, 16) ??
-                'Fecha desconocida';
-
-            _showResult(
-              success: false,
-              message:
-                  '🔒 Este código QR ya fue FINALIZADO\n\n'
-                  '❌ No se pueden registrar más asistencias con este QR\n\n'
-                  '📅 Finalizado: $fechaFinalizado\n\n'
-                  '💡 Solicita al organizador que genere un nuevo código QR si es necesario.',
-            );
-            return;
-          }
-
-          print('✅ QR activo - Continuando con el registro...');
-        } catch (e) {
-          print('❌ Error al verificar estado del QR: $e');
-          _showResult(
-            success: false,
-            message: 'Error al verificar el estado del QR: $e',
-          );
-          return;
-        }
-      } else {
-        // QR antiguo sin qrId (retrocompatibilidad)
-        print('⚠️ QR sin ID - Formato antiguo detectado');
-      }
-
-      // Debug: Imprimir datos del QR escaneado
-      print('📱 Datos del QR escaneado:');
-      print('   EventId: ${qrInfo['eventId']}');
-      print('   Categoría: ${qrInfo['categoria']}');
-      print('   Código Proyecto: ${qrInfo['codigoProyecto']}');
-      print('   Título Proyecto: ${qrInfo['tituloProyecto']}');
-      print('   Grupo: ${qrInfo['grupo']}');
-
-      if (qrInfo['type'] != 'asistencia_categoria') {
+      if (qrId == null || qrId.toString().isEmpty) {
         _showResult(
           success: false,
-          message: 'Este QR no es para registro de asistencia por categorías',
+          message: '⚠️ QR sin ID válido. Regenera el código QR.',
         );
         return;
       }
 
+      print('🔍 Verificando QR: $qrId');
+
+      final qrDoc = await _firestore
+          .collection('events')
+          .doc(qrInfo['eventId'])
+          .collection('qr_codes')
+          .doc(qrId)
+          .get();
+
+      if (!qrDoc.exists) {
+        _showResult(
+          success: false,
+          message: '⚠️ Este código QR no existe o fue eliminado',
+        );
+        return;
+      }
+
+      final qrDataMap = qrDoc.data()!;
+      final isActive = qrDataMap['activo'] ?? false;
+
+      if (!isActive) {
+        final finalizadoAt = qrDataMap['finalizadoAt'] as Timestamp?;
+        final fechaFinalizado =
+            finalizadoAt?.toDate().toString().substring(0, 16) ??
+            'Fecha desconocida';
+
+        _showResult(
+          success: false,
+          message:
+              '🔒 Este código QR ya fue FINALIZADO\n\n'
+              '❌ No se pueden registrar más asistencias\n\n'
+              '📅 Finalizado: $fechaFinalizado',
+        );
+        return;
+      }
+
+      // ═══════════════════════════════════════════════════════════
+      // PASO 3: VALIDAR CAMPOS REQUERIDOS
+      // ═══════════════════════════════════════════════════════════
       final requiredFields = [
         'eventId',
         'eventName',
@@ -198,7 +186,7 @@ class _EscanearQRScreenState extends State<EscanearQRScreen>
         }
       }
 
-      if (_currentUserId == null) {
+      if (_currentUserId == null || _cachedUserData == null) {
         _showResult(
           success: false,
           message: 'Debes iniciar sesión para registrar asistencia',
@@ -206,164 +194,14 @@ class _EscanearQRScreenState extends State<EscanearQRScreen>
         return;
       }
 
-      final eventDoc = await _firestore
-          .collection('events')
-          .doc(qrInfo['eventId'])
-          .get();
-
-      if (!eventDoc.exists) {
-        _showResult(
-          success: false,
-          message: 'El evento ya no existe o fue eliminado',
-        );
-        return;
-      }
-
-      final eventData = eventDoc.data() as Map<String, dynamic>;
-
-      // ================================================================
-      // EXTRAER DATOS DEL PROYECTO DEL QR
-      // ================================================================
-      final codigoProyecto = qrInfo['codigoProyecto']?.toString().trim();
-      final tituloProyecto = qrInfo['tituloProyecto']?.toString().trim();
-      final grupo = qrInfo['grupo']?.toString().trim();
-
-      print('🔍 Datos extraídos del QR:');
-      print('   Código Proyecto: $codigoProyecto');
-      print('   Título Proyecto: $tituloProyecto');
-      print('   Grupo: $grupo');
-
-      // ================================================================
-      // VALIDACIÓN CRÍTICA: Por código de proyecto Y categoría
-      // ================================================================
-      print('🔍 Buscando asistencias previas...');
-      print('   StudentId: $_currentUserId');
-      print('   EventId: ${qrInfo['eventId']}');
-      print('   Categoría: ${qrInfo['categoria']}');
-      print('   Código Proyecto: $codigoProyecto');
-
-      // CASO 1: Si el QR tiene código de proyecto específico
-      if (codigoProyecto != null &&
-          codigoProyecto.isNotEmpty &&
-          codigoProyecto.toLowerCase() != 'sin código' &&
-          codigoProyecto.toLowerCase() != 'sin codigo' &&
-          codigoProyecto != 'null') {
-        final existingByCode = await _firestore
-            .collection('asistencias')
-            .where('studentId', isEqualTo: _currentUserId)
-            .where('eventId', isEqualTo: qrInfo['eventId'])
-            .where('codigoProyecto', isEqualTo: codigoProyecto)
-            .get();
-
-        print(
-          '📊 Asistencias encontradas por código: ${existingByCode.docs.length}',
-        );
-
-        if (existingByCode.docs.isNotEmpty) {
-          final existingData = existingByCode.docs.first.data();
-          final registeredDate =
-              (existingData['timestamp'] as Timestamp?)
-                  ?.toDate()
-                  .toString()
-                  .substring(0, 16) ??
-              'Fecha desconocida';
-
-          _showResult(
-            success: false,
-            message:
-                '⚠️ Ya registraste tu asistencia para este proyecto\n\n'
-                '📋 Proyecto: ${existingData['tituloProyecto'] ?? tituloProyecto ?? 'Sin título'}\n'
-                '🔢 Código: $codigoProyecto\n'
-                '📂 Categoría: ${qrInfo['categoria']}\n'
-                '📅 Registrado: $registeredDate\n\n'
-                '✅ Puedes escanear QR de OTROS proyectos de la misma categoría, '
-                'pero no este mismo proyecto nuevamente.',
-          );
-          return;
-        }
-      }
-      // CASO 2: Si no tiene código, validar por título + categoría
-      else if (tituloProyecto != null &&
-          tituloProyecto.isNotEmpty &&
-          tituloProyecto.toLowerCase() != 'sin título' &&
-          tituloProyecto.toLowerCase() != 'sin titulo' &&
-          tituloProyecto != 'null') {
-        final existingByTitle = await _firestore
-            .collection('asistencias')
-            .where('studentId', isEqualTo: _currentUserId)
-            .where('eventId', isEqualTo: qrInfo['eventId'])
-            .where('categoria', isEqualTo: qrInfo['categoria'])
-            .where('tituloProyecto', isEqualTo: tituloProyecto)
-            .get();
-
-        print(
-          '📊 Asistencias encontradas por título: ${existingByTitle.docs.length}',
-        );
-
-        if (existingByTitle.docs.isNotEmpty) {
-          final existingData = existingByTitle.docs.first.data();
-          final registeredDate =
-              (existingData['timestamp'] as Timestamp?)
-                  ?.toDate()
-                  .toString()
-                  .substring(0, 16) ??
-              'Fecha desconocida';
-
-          _showResult(
-            success: false,
-            message:
-                '⚠️ Ya registraste tu asistencia para este proyecto\n\n'
-                '📋 Proyecto: $tituloProyecto\n'
-                '📂 Categoría: ${qrInfo['categoria']}\n'
-                '📅 Registrado: $registeredDate\n\n'
-                '✅ Puedes escanear QR de OTROS proyectos de la misma categoría.',
-          );
-          return;
-        }
-      }
-
-      // Validación adicional por grupo (si existe)
-      if (grupo != null &&
-          grupo.isNotEmpty &&
-          grupo.toLowerCase() != 'sin grupo' &&
-          grupo != 'null') {
-        final existingGroupAttendance = await _firestore
-            .collection('asistencias')
-            .where('studentId', isEqualTo: _currentUserId)
-            .where('eventId', isEqualTo: qrInfo['eventId'])
-            .where('grupo', isEqualTo: grupo)
-            .get();
-
-        if (existingGroupAttendance.docs.isNotEmpty) {
-          _showResult(
-            success: false,
-            message:
-                'Ya tienes registrada la asistencia para el Grupo $grupo de este evento.',
-          );
-          return;
-        }
-      }
-
-      final userDoc = await _firestore
-          .collection('users')
-          .doc(_currentUserId)
-          .get();
-
-      if (!userDoc.exists) {
-        _showResult(
-          success: false,
-          message: 'Usuario no encontrado en el sistema',
-        );
-        return;
-      }
-
-      final userData = userDoc.data()!;
-
-      String userFacultad = (userData['facultad'] ?? '')
+      // ═══════════════════════════════════════════════════════════
+      // PASO 4: VALIDAR FACULTAD Y CARRERA (sin lectura adicional)
+      // ═══════════════════════════════════════════════════════════
+      String userFacultad = (_cachedUserData!['facultad'] ?? '')
           .toString()
           .trim()
           .toLowerCase();
-      String userCarrera = (userData['carrera'] ?? '')
+      String userCarrera = (_cachedUserData!['carrera'] ?? '')
           .toString()
           .trim()
           .toLowerCase();
@@ -376,44 +214,85 @@ class _EscanearQRScreenState extends State<EscanearQRScreen>
           .trim()
           .toLowerCase();
 
+      // Normalizar carreras
       userCarrera = userCarrera.replaceAll(RegExp(r'^ep\s*'), '');
       eventCarrera = eventCarrera.replaceAll(RegExp(r'^ep\s*'), '');
 
-      if (userFacultad != eventFacultad || userCarrera != eventCarrera) {
+      // Evento general de UPeU
+      bool esEventoUPeU =
+          eventFacultad == 'universidad peruana unión' ||
+          eventFacultad == 'universidad peruana union';
+      bool esCarreraGeneral = eventCarrera == 'general';
+
+      if (!esEventoUPeU || !esCarreraGeneral) {
+        if (userFacultad != eventFacultad || userCarrera != eventCarrera) {
+          _showResult(
+            success: false,
+            message:
+                'Este evento no corresponde a tu facultad/carrera.\n\n'
+                '📌 EVENTO:\n'
+                'Facultad: "${qrInfo['facultad']}"\n'
+                'Carrera: "${qrInfo['carrera']}"\n\n'
+                '👤 TU PERFIL:\n'
+                'Facultad: "${_cachedUserData!['facultad']}"\n'
+                'Carrera: "${_cachedUserData!['carrera']}"',
+          );
+          return;
+        }
+      }
+
+      // ═══════════════════════════════════════════════════════════
+      // PASO 5: VERIFICAR DUPLICADOS CON ID COMPUESTO (1 LECTURA)
+      // ═══════════════════════════════════════════════════════════
+      final codigoProyecto = qrInfo['codigoProyecto']?.toString().trim();
+      final tituloProyecto = qrInfo['tituloProyecto']?.toString().trim();
+      final grupo = qrInfo['grupo']?.toString().trim();
+
+      final parts = _currentUserId!.split('/');
+      final studentId = parts[1];
+
+      // ✅ ID COMPUESTO: eventId + studentId + codigoProyecto
+      final scanId = '${qrInfo['eventId']}_${studentId}_$codigoProyecto';
+
+      print('🔍 Verificando duplicado con ID: $scanId');
+
+      final existingDoc = await _firestore
+          .collection('events')
+          .doc(qrInfo['eventId'])
+          .collection('asistencias')
+          .doc(studentId)
+          .collection('scans')
+          .doc(scanId)
+          .get();
+
+      if (existingDoc.exists) {
+        final existingData = existingDoc.data()!;
+        final registeredDate =
+            (existingData['timestamp'] as Timestamp?)
+                ?.toDate()
+                .toString()
+                .substring(0, 16) ??
+            'Fecha desconocida';
+
+        // ✅ OPTIMIZACIÓN: Eliminado el conteo extra de scans
+        // Antes hacía una query adicional para contar
+        // Ahora simplemente informa que ya existe
+
         _showResult(
           success: false,
           message:
-              'Este evento no corresponde a tu facultad/carrera.\n\n'
-              '📌 EVENTO:\n'
-              'Facultad: "${qrInfo['facultad']}"\n'
-              'Carrera: "${qrInfo['carrera']}"\n\n'
-              '👤 TU PERFIL:\n'
-              'Facultad: "${userData['facultad']}"\n'
-              'Carrera: "${userData['carrera']}"\n\n'
-              '💡 Verifica que los datos coincidan exactamente.',
+              '⚠️ Ya escaneaste este código anteriormente\n\n'
+              '📋 Proyecto: ${existingData['tituloProyecto']}\n'
+              '🔢 Código: $codigoProyecto\n'
+              '📂 Categoría: ${qrInfo['categoria']}\n'
+              '📅 Registrado: $registeredDate',
         );
         return;
       }
 
-      DocumentSnapshot? relatedProject;
-      try {
-        final userProjects = await _firestore
-            .collection('events')
-            .doc(qrInfo['eventId'])
-            .collection('proyectos')
-            .where('studentId', isEqualTo: _currentUserId)
-            .get();
-
-        if (userProjects.docs.isNotEmpty) {
-          relatedProject = userProjects.docs.first;
-        }
-      } catch (e) {
-        print('⚠️ Error buscando proyectos: $e');
-      }
-
-      // ================================================================
-      // PREPARAR DATOS FINALES PARA GUARDAR
-      // ================================================================
+      // ═══════════════════════════════════════════════════════════
+      // PASO 6: GUARDAR ASISTENCIA CON BATCH (1 ESCRITURA BATCH)
+      // ═══════════════════════════════════════════════════════════
       final codigoFinal =
           (codigoProyecto != null &&
               codigoProyecto.isNotEmpty &&
@@ -440,60 +319,61 @@ class _EscanearQRScreenState extends State<EscanearQRScreen>
           ? grupo
           : null;
 
-      print('💾 Valores finales a guardar:');
-      print('   codigoFinal: $codigoFinal');
-      print('   tituloFinal: $tituloFinal');
-      print('   grupoFinal: $grupoFinal');
-
-      final asistenciaData = {
-        'studentId': _currentUserId,
-        'studentName': _currentUserName ?? userData['name'] ?? 'Sin nombre',
-        'studentUsername': userData['username'] ?? _currentUsername,
-        'studentDNI': userData['dni'],
-        'studentCodigo': userData['codigoUniversitario'],
-        'eventId': qrInfo['eventId'],
-        'eventName': qrInfo['eventName'],
-        'facultad': qrInfo['facultad'],
-        'carrera': qrInfo['carrera'],
+      final scanData = {
+        'codigoProyecto': codigoFinal,
+        'tituloProyecto': tituloFinal,
         'categoria': qrInfo['categoria'],
         'grupo': grupoFinal,
-        'tituloProyecto': tituloFinal,
-        'codigoProyecto': codigoFinal,
+        'qrId': qrId,
         'timestamp': FieldValue.serverTimestamp(),
         'qrTimestamp': qrInfo['timestamp'],
-        'qrId': qrId, // ✅ Guardar el ID del QR usado
-        'registeredBy': 'qr_scan',
         'registrationMethod': 'qr_scan',
-        'userFacultad': userData['facultad'],
-        'userCarrera': userData['carrera'],
-        'eventDescription': eventData['description'] ?? '',
-        'eventDate': eventData['date'],
-        'eventLocation': eventData['location'] ?? 'Sin ubicación',
-        'eventFacultad': eventData['facultad'] ?? qrInfo['facultad'],
-        'eventCarrera': eventData['carrera'] ?? qrInfo['carrera'],
-        'proyectoId': relatedProject?.id,
-        'proyectoData': relatedProject?.data(),
-        'asistenciaLibre': relatedProject == null,
       };
 
-      print('💾 Guardando asistencia con:');
-      print('   codigoProyecto: ${asistenciaData['codigoProyecto']}');
-      print('   tituloProyecto: ${asistenciaData['tituloProyecto']}');
-      print('   grupo: ${asistenciaData['grupo']}');
-      print('   qrId: ${asistenciaData['qrId']}');
+      // ✅ OPTIMIZACIÓN: Usar batch para ambas escrituras
+      final batch = _firestore.batch();
 
-      final docRef = await _firestore
+      // Referencia al scan
+      final scanRef = _firestore
+          .collection('events')
+          .doc(qrInfo['eventId'])
           .collection('asistencias')
-          .add(asistenciaData);
+          .doc(studentId)
+          .collection('scans')
+          .doc(scanId);
 
-      print('✅ Asistencia guardada con ID: ${docRef.id}');
+      // Referencia al resumen
+      final resumenRef = _firestore
+          .collection('events')
+          .doc(qrInfo['eventId'])
+          .collection('asistencias')
+          .doc(studentId);
+
+      batch.set(scanRef, scanData);
+      batch.set(resumenRef, {
+        'studentName': _currentUserName,
+        'studentUsername': _cachedUserData!['username'],
+        'studentDNI': _cachedUserData!['dni'],
+        'studentCodigo': _cachedUserData!['codigoUniversitario'],
+        'facultad': _cachedUserData!['facultad'],
+        'carrera': _cachedUserData!['carrera'],
+        'eventId': qrInfo['eventId'],
+        'eventName': qrInfo['eventName'],
+        'lastScan': FieldValue.serverTimestamp(),
+        'totalScans': FieldValue.increment(1),
+      }, SetOptions(merge: true));
+
+      // ✅ Ejecutar ambas operaciones en una sola llamada
+      await batch.commit();
+
+      print('✅ Asistencia guardada con batch: $scanId');
 
       _showResult(
         success: true,
         message: 'Asistencia registrada exitosamente',
         eventName: qrInfo['eventName'],
         categoria: qrInfo['categoria'],
-        asistenciaId: docRef.id,
+        codigoProyecto: codigoFinal,
       );
     } catch (e) {
       print('❌ Error procesando asistencia: $e');
@@ -510,7 +390,7 @@ class _EscanearQRScreenState extends State<EscanearQRScreen>
     required String message,
     String? eventName,
     String? categoria,
-    String? asistenciaId,
+    String? codigoProyecto,
   }) {
     showDialog(
       context: context,
@@ -522,6 +402,10 @@ class _EscanearQRScreenState extends State<EscanearQRScreen>
           ),
           elevation: 5,
           child: Container(
+            constraints: BoxConstraints(
+              maxWidth: MediaQuery.of(context).size.width * 0.9,
+              maxHeight: MediaQuery.of(context).size.height * 0.85,
+            ),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(20),
               gradient: LinearGradient(
@@ -532,229 +416,272 @@ class _EscanearQRScreenState extends State<EscanearQRScreen>
                     : [Colors.red.shade50, Colors.white],
               ),
             ),
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TweenAnimationBuilder(
-                  duration: const Duration(milliseconds: 600),
-                  tween: Tween<double>(begin: 0, end: 1),
-                  builder: (context, double value, child) {
-                    return Transform.scale(
-                      scale: value,
-                      child: Container(
-                        width: 70,
-                        height: 70,
-                        decoration: BoxDecoration(
-                          color: success ? Colors.green : Colors.red,
-                          shape: BoxShape.circle,
-                          boxShadow: [
-                            BoxShadow(
-                              color: (success ? Colors.green : Colors.red)
-                                  .withOpacity(0.3),
-                              blurRadius: 20,
-                              spreadRadius: 5,
-                            ),
-                          ],
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TweenAnimationBuilder(
+                    duration: const Duration(milliseconds: 600),
+                    tween: Tween<double>(begin: 0, end: 1),
+                    builder: (context, double value, child) {
+                      return Transform.scale(
+                        scale: value,
+                        child: Container(
+                          width: 70,
+                          height: 70,
+                          decoration: BoxDecoration(
+                            color: success ? Colors.green : Colors.red,
+                            shape: BoxShape.circle,
+                            boxShadow: [
+                              BoxShadow(
+                                color: (success ? Colors.green : Colors.red)
+                                    .withOpacity(0.3),
+                                blurRadius: 20,
+                                spreadRadius: 5,
+                              ),
+                            ],
+                          ),
+                          child: Icon(
+                            success ? Icons.check_circle : Icons.error,
+                            color: Colors.white,
+                            size: 40,
+                          ),
                         ),
-                        child: Icon(
-                          success ? Icons.check_circle : Icons.error,
-                          color: Colors.white,
-                          size: 40,
-                        ),
-                      ),
-                    );
-                  },
-                ),
-                const SizedBox(height: 20),
-                Text(
-                  success ? '¡Éxito!' : 'Error',
-                  style: TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                    color: success
-                        ? Colors.green.shade700
-                        : Colors.red.shade700,
+                      );
+                    },
                   ),
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  message,
-                  style: const TextStyle(
-                    fontSize: 15,
-                    color: Color(0xFF64748B),
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-                if (success && eventName != null) ...[
                   const SizedBox(height: 20),
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.green.shade200),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.grey.shade200,
-                          blurRadius: 10,
-                          offset: const Offset(0, 4),
-                        ),
-                      ],
+                  Text(
+                    success ? '¡Éxito!' : 'Error',
+                    style: TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                      color: success
+                          ? Colors.green.shade700
+                          : Colors.red.shade700,
                     ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.all(8),
-                              decoration: BoxDecoration(
-                                color: Colors.green.shade50,
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: Icon(
-                                Icons.event_available,
-                                color: Colors.green.shade600,
-                                size: 20,
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Text(
-                                eventName,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 15,
-                                  color: Color(0xFF1E3A5F),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                        if (categoria != null) ...[
-                          const SizedBox(height: 12),
+                  ),
+                  const SizedBox(height: 12),
+                  Flexible(
+                    child: Text(
+                      message,
+                      style: const TextStyle(
+                        fontSize: 15,
+                        color: Color(0xFF64748B),
+                      ),
+                      textAlign: TextAlign.center,
+                      overflow: TextOverflow.visible,
+                      softWrap: true,
+                    ),
+                  ),
+                  if (success && eventName != null) ...[
+                    const SizedBox(height: 20),
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.green.shade200),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.grey.shade200,
+                            blurRadius: 10,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
                           Row(
                             children: [
-                              Icon(
-                                Icons.category,
-                                color: Colors.blue.shade600,
-                                size: 16,
+                              Container(
+                                padding: const EdgeInsets.all(8),
+                                decoration: BoxDecoration(
+                                  color: Colors.green.shade50,
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Icon(
+                                  Icons.event_available,
+                                  color: Colors.green.shade600,
+                                  size: 20,
+                                ),
                               ),
-                              const SizedBox(width: 8),
-                              Text(
-                                'Categoría: $categoria',
-                                style: const TextStyle(
-                                  fontSize: 13,
-                                  color: Color(0xFF64748B),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  eventName,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 15,
+                                    color: Color(0xFF1E3A5F),
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                  maxLines: 2,
                                 ),
                               ),
                             ],
                           ),
-                        ],
-                        const SizedBox(height: 12),
-                        Row(
-                          children: [
-                            Icon(
-                              Icons.person,
-                              color: Colors.grey.shade600,
-                              size: 16,
+                          if (categoria != null) ...[
+                            const SizedBox(height: 12),
+                            Row(
+                              children: [
+                                Icon(
+                                  Icons.category,
+                                  color: Colors.blue.shade600,
+                                  size: 16,
+                                ),
+                                const SizedBox(width: 8),
+                                Flexible(
+                                  child: Text(
+                                    'Categoría: $categoria',
+                                    style: const TextStyle(
+                                      fontSize: 13,
+                                      color: Color(0xFF64748B),
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                    maxLines: 2,
+                                  ),
+                                ),
+                              ],
                             ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    _currentUserName ?? '',
+                          ],
+                          if (codigoProyecto != null &&
+                              codigoProyecto != 'Sin código') ...[
+                            const SizedBox(height: 12),
+                            Row(
+                              children: [
+                                Icon(
+                                  Icons.qr_code,
+                                  color: Colors.purple.shade600,
+                                  size: 16,
+                                ),
+                                const SizedBox(width: 8),
+                                Flexible(
+                                  child: Text(
+                                    'Código: $codigoProyecto',
                                     style: const TextStyle(
                                       fontSize: 13,
                                       fontWeight: FontWeight.w600,
                                       color: Color(0xFF1E3A5F),
                                     ),
+                                    overflow: TextOverflow.ellipsis,
+                                    maxLines: 1,
                                   ),
-                                  if (_currentUsername != null)
-                                    Text(
-                                      '@$_currentUsername',
-                                      style: const TextStyle(
-                                        fontSize: 12,
-                                        color: Color(0xFF64748B),
-                                      ),
-                                    ),
-                                ],
-                              ),
+                                ),
+                              ],
                             ),
                           ],
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-                const SizedBox(height: 24),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    if (!success)
-                      Expanded(
-                        child: OutlinedButton(
-                          onPressed: () {
-                            Navigator.of(context).pop();
-                            Navigator.of(context).pop();
-                          },
-                          style: OutlinedButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(vertical: 14),
-                            side: const BorderSide(color: Color(0xFF64748B)),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                          ),
-                          child: const Text(
-                            'Cancelar',
-                            style: TextStyle(
-                              color: Color(0xFF64748B),
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                      ),
-                    if (!success) const SizedBox(width: 12),
-                    Expanded(
-                      child: ElevatedButton(
-                        onPressed: () {
-                          Navigator.of(context).pop();
-                          if (success) {
-                            Navigator.of(context).pushReplacement(
-                              MaterialPageRoute(
-                                builder: (context) => const AsistenciasScreen(),
+                          const SizedBox(height: 12),
+                          Row(
+                            children: [
+                              Icon(
+                                Icons.person,
+                                color: Colors.grey.shade600,
+                                size: 16,
                               ),
-                            );
-                          } else {
-                            _resetScanner();
-                          }
-                        },
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: success
-                              ? Colors.green
-                              : const Color(0xFF1E3A5F),
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      _currentUserName ?? '',
+                                      style: const TextStyle(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w600,
+                                        color: Color(0xFF1E3A5F),
+                                      ),
+                                      overflow: TextOverflow.ellipsis,
+                                      maxLines: 1,
+                                    ),
+                                    if (_currentUsername != null)
+                                      Text(
+                                        '@$_currentUsername',
+                                        style: const TextStyle(
+                                          fontSize: 12,
+                                          color: Color(0xFF64748B),
+                                        ),
+                                        overflow: TextOverflow.ellipsis,
+                                        maxLines: 1,
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            ],
                           ),
-                          elevation: 0,
-                        ),
-                        child: Text(
-                          success ? 'Ver Asistencias' : 'Reintentar',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 15,
-                          ),
-                        ),
+                        ],
                       ),
                     ),
                   ],
-                ),
-              ],
+                  const SizedBox(height: 24),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      if (!success)
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: () {
+                              Navigator.of(context).pop();
+                              Navigator.of(context).pop();
+                            },
+                            style: OutlinedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                              side: const BorderSide(color: Color(0xFF64748B)),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                            child: const Text(
+                              'Cancelar',
+                              style: TextStyle(
+                                color: Color(0xFF64748B),
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ),
+                      if (!success) const SizedBox(width: 12),
+                      Expanded(
+                        child: ElevatedButton(
+                          onPressed: () {
+                            Navigator.of(context).pop();
+                            if (success) {
+                              Navigator.of(context).pushReplacement(
+                                MaterialPageRoute(
+                                  builder: (context) =>
+                                      const AsistenciasScreen(),
+                                ),
+                              );
+                            } else {
+                              _resetScanner();
+                            }
+                          },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: success
+                                ? Colors.green
+                                : const Color(0xFF1E3A5F),
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            elevation: 0,
+                          ),
+                          child: Text(
+                            success ? 'Ver Asistencias' : 'Reintentar',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 15,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
             ),
           ),
         );
@@ -800,7 +727,6 @@ class _EscanearQRScreenState extends State<EscanearQRScreen>
               )
             : Column(
                 children: [
-                  // Header con estilo admin
                   Padding(
                     padding: const EdgeInsets.all(20.0),
                     child: Row(
@@ -816,9 +742,7 @@ class _EscanearQRScreenState extends State<EscanearQRScreen>
                               color: Colors.white,
                               size: 22,
                             ),
-                            onPressed: () {
-                              Navigator.of(context).pop();
-                            },
+                            onPressed: () => Navigator.of(context).pop(),
                             tooltip: 'Regresar',
                           ),
                         ),
@@ -875,8 +799,6 @@ class _EscanearQRScreenState extends State<EscanearQRScreen>
                       ],
                     ),
                   ),
-
-                  // Content Area
                   Expanded(
                     child: Container(
                       decoration: const BoxDecoration(
@@ -888,7 +810,6 @@ class _EscanearQRScreenState extends State<EscanearQRScreen>
                       ),
                       child: Column(
                         children: [
-                          // User Info Card
                           Container(
                             margin: const EdgeInsets.all(20),
                             padding: const EdgeInsets.all(20),
@@ -903,91 +824,54 @@ class _EscanearQRScreenState extends State<EscanearQRScreen>
                                 ),
                               ],
                             ),
-                            child: Column(
+                            child: Row(
                               children: [
-                                Row(
-                                  children: [
-                                    Container(
-                                      width: 50,
-                                      height: 50,
-                                      decoration: BoxDecoration(
-                                        gradient: LinearGradient(
-                                          colors: [
-                                            const Color(0xFF1E3A5F),
-                                            Colors.blue.shade700,
-                                          ],
-                                        ),
-                                        shape: BoxShape.circle,
-                                      ),
-                                      child: const Icon(
-                                        Icons.person,
-                                        color: Colors.white,
-                                        size: 28,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 16),
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            _currentUserName ?? 'Cargando...',
-                                            style: const TextStyle(
-                                              fontSize: 16,
-                                              fontWeight: FontWeight.bold,
-                                              color: Color(0xFF1E3A5F),
-                                            ),
-                                          ),
-                                          if (_currentUsername != null)
-                                            Text(
-                                              '@$_currentUsername',
-                                              style: const TextStyle(
-                                                fontSize: 14,
-                                                color: Color(0xFF64748B),
-                                              ),
-                                            ),
-                                        ],
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                const SizedBox(height: 16),
                                 Container(
-                                  padding: const EdgeInsets.all(12),
+                                  width: 50,
+                                  height: 50,
                                   decoration: BoxDecoration(
-                                    color: Colors.green.shade50,
-                                    borderRadius: BorderRadius.circular(12),
-                                    border: Border.all(
-                                      color: Colors.green.shade200,
+                                    gradient: LinearGradient(
+                                      colors: [
+                                        const Color(0xFF1E3A5F),
+                                        Colors.blue.shade700,
+                                      ],
                                     ),
+                                    shape: BoxShape.circle,
                                   ),
-                                  child: Row(
+                                  child: const Icon(
+                                    Icons.person,
+                                    color: Colors.white,
+                                    size: 28,
+                                  ),
+                                ),
+                                const SizedBox(width: 16),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
                                     children: [
-                                      Icon(
-                                        Icons.info_outline,
-                                        color: Colors.green.shade700,
-                                        size: 20,
-                                      ),
-                                      const SizedBox(width: 12),
-                                      const Expanded(
-                                        child: Text(
-                                          'Un escaneo por proyecto - Múltiples proyectos permitidos',
-                                          style: TextStyle(
-                                            fontSize: 13,
-                                            color: Color(0xFF1E3A5F),
-                                            fontWeight: FontWeight.w500,
-                                          ),
+                                      Text(
+                                        _currentUserName ?? 'Cargando...',
+                                        style: const TextStyle(
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.bold,
+                                          color: Color(0xFF1E3A5F),
                                         ),
                                       ),
+                                      if (_currentUsername != null)
+                                        Text(
+                                          '@$_currentUsername',
+                                          style: const TextStyle(
+                                            fontSize: 14,
+                                            color: Color(0xFF64748B),
+                                          ),
+                                        ),
                                     ],
                                   ),
                                 ),
                               ],
                             ),
                           ),
-
-                          // Scanner Area
                           Expanded(
                             child: Container(
                               margin: const EdgeInsets.symmetric(
@@ -1022,14 +906,12 @@ class _EscanearQRScreenState extends State<EscanearQRScreen>
                                       }
                                     },
                                   ),
-                                  // Animated Scanner Overlay
                                   Center(
-                                    child: Container(
+                                    child: SizedBox(
                                       width: 250,
                                       height: 250,
                                       child: Stack(
                                         children: [
-                                          // Corner decorations
                                           ...List.generate(4, (index) {
                                             return Positioned(
                                               top: index < 2 ? 0 : null,
@@ -1088,7 +970,6 @@ class _EscanearQRScreenState extends State<EscanearQRScreen>
                                               ),
                                             );
                                           }),
-                                          // Animated scan line
                                           AnimatedBuilder(
                                             animation: _scanLineAnimation,
                                             builder: (context, child) {
@@ -1191,8 +1072,6 @@ class _EscanearQRScreenState extends State<EscanearQRScreen>
                               ),
                             ),
                           ),
-
-                          // Instructions Card
                           Container(
                             margin: const EdgeInsets.all(20),
                             padding: const EdgeInsets.all(20),
@@ -1239,7 +1118,7 @@ class _EscanearQRScreenState extends State<EscanearQRScreen>
                                       ),
                                       SizedBox(height: 4),
                                       Text(
-                                        'Alinea el código dentro del recuadro para escanearlo',
+                                        'Escanea todos los códigos diferentes de la categoría',
                                         style: TextStyle(
                                           fontSize: 12,
                                           color: Color(0xFF64748B),

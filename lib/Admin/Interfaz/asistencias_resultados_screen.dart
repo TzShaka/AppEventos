@@ -22,8 +22,10 @@ class _AsistenciasResultadosScreenState
     with TickerProviderStateMixin {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final TextEditingController _searchController = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
 
   bool _isLoading = true;
+  bool _isLoadingAsistencias = false;
   List<Map<String, dynamic>> _estudiantes = [];
   List<Map<String, dynamic>> _estudiantesFiltrados = [];
   Map<String, List<Map<String, dynamic>>> _asistenciasPorEstudiante = {};
@@ -45,7 +47,7 @@ class _AsistenciasResultadosScreenState
     super.initState();
     _headerAnimationController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 800),
+      duration: const Duration(milliseconds: 600),
     );
     _headerAnimation = CurvedAnimation(
       parent: _headerAnimationController,
@@ -58,60 +60,139 @@ class _AsistenciasResultadosScreenState
   @override
   void dispose() {
     _searchController.dispose();
+    _scrollController.dispose();
     _headerAnimationController.dispose();
     super.dispose();
   }
 
+  // ═══════════════════════════════════════════════════════════════
+  // CARGA DE DATOS OPTIMIZADA
+  // ═══════════════════════════════════════════════════════════════
   Future<void> _cargarDatos() async {
+    if (!mounted) return;
+
     setState(() {
       _isLoading = true;
+      _isLoadingAsistencias = false;
     });
 
     try {
-      // Cargar estudiantes
-      final estudiantesSnapshot = await _firestore
-          .collection('users')
-          .where('userType', isEqualTo: 'student')
-          .where('facultad', isEqualTo: widget.facultad)
-          .where('carrera', isEqualTo: widget.carrera)
-          .get();
+      // Cargar estudiantes primero (más rápido)
+      await _cargarEstudiantes();
 
-      List<Map<String, dynamic>> estudiantesList = [];
-      List<String> estudiantesIds = [];
-      Set<String> ciclos = {};
-      Set<String> grupos = {};
+      // Cargar asistencias en segundo plano
+      if (_estudiantes.isNotEmpty && mounted) {
+        setState(() {
+          _isLoadingAsistencias = true;
+        });
 
-      for (var doc in estudiantesSnapshot.docs) {
-        final data = doc.data();
-        data['id'] = doc.id;
-        estudiantesList.add(data);
-        estudiantesIds.add(doc.id);
-
-        if (data['ciclo'] != null && data['ciclo'].toString().isNotEmpty) {
-          ciclos.add(data['ciclo'].toString());
-        }
-        if (data['grupo'] != null && data['grupo'].toString().isNotEmpty) {
-          grupos.add(data['grupo'].toString());
-        }
-      }
-
-      setState(() {
-        _estudiantes = estudiantesList;
-        _ciclosDisponibles = ciclos.toList()..sort();
-        _gruposDisponibles = grupos.toList()..sort();
-      });
-
-      if (estudiantesIds.isNotEmpty) {
+        final estudiantesIds = _estudiantes
+            .map((e) => e['id'] as String)
+            .toList();
         await _cargarAsistenciasEstudiantes(estudiantesIds);
+
+        if (mounted) {
+          setState(() {
+            _isLoadingAsistencias = false;
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint('❌ Error cargando datos: $e');
+      if (mounted) {
+        _showSnackBar('Error cargando datos', isError: true);
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _isLoadingAsistencias = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _cargarEstudiantes() async {
+    try {
+      debugPrint(
+        '🔍 Cargando estudiantes de ${widget.facultad} - ${widget.carrera}',
+      );
+
+      final List<Map<String, dynamic>> estudiantesList = [];
+      final Set<String> ciclos = {};
+      final Set<String> grupos = {};
+
+      // Obtener carreras
+      final carrerasSnapshot = await _firestore.collection('users').get();
+
+      for (var carreraDoc in carrerasSnapshot.docs) {
+        final carreraName = carreraDoc.id;
+
+        // Saltar documentos especiales
+        if (carreraName == 'admin' ||
+            carreraName == 'asistente' ||
+            carreraName == 'jurado') {
+          continue;
+        }
+
+        try {
+          // ✅ BÚSQUEDA CON WHERE COMO EN TU VERSIÓN ORIGINAL
+          Query query = _firestore
+              .collection('users')
+              .doc(carreraName)
+              .collection('students');
+
+          // Aplicar filtro de carrera
+          query = query.where('carrera', isEqualTo: widget.carrera);
+
+          // Aplicar filtro de facultad
+          query = query.where('facultad', isEqualTo: widget.facultad);
+
+          final studentsSnapshot = await query.get();
+
+          debugPrint(
+            '📂 Carrera $carreraName: ${studentsSnapshot.docs.length} estudiantes encontrados',
+          );
+
+          for (var doc in studentsSnapshot.docs) {
+            final data = Map<String, dynamic>.from(
+              doc.data() as Map<String, dynamic>,
+            );
+            data['id'] = '$carreraName/${doc.id}';
+            data['docId'] = doc.id;
+            data['carreraPath'] = carreraName;
+
+            estudiantesList.add(data);  
+
+            // Recopilar ciclos y grupos
+            final ciclo = data['ciclo']?.toString();
+            final grupo = data['grupo']?.toString();
+
+            if (ciclo != null && ciclo.isNotEmpty) ciclos.add(ciclo);
+            if (grupo != null && grupo.isNotEmpty) grupos.add(grupo);
+
+            debugPrint(
+              '   ✅ ${data['name']} - C${ciclo ?? '?'} G${grupo ?? '?'}',
+            );
+          }
+        } catch (e) {
+          debugPrint('⚠️ Error en $carreraName: $e');
+        }
       }
 
-      _aplicarFiltros();
+      debugPrint('✅ Total estudiantes cargados: ${estudiantesList.length}');
+
+      if (mounted) {
+        setState(() {
+          _estudiantes = estudiantesList;
+          _ciclosDisponibles = ciclos.toList()..sort();
+          _gruposDisponibles = grupos.toList()..sort();
+        });
+        _aplicarFiltros();
+      }
     } catch (e) {
-      _showSnackBar('Error cargando datos: $e', isError: true);
-    } finally {
-      setState(() {
-        _isLoading = false;
-      });
+      debugPrint('❌ Error cargando estudiantes: $e');
+      rethrow;
     }
   }
 
@@ -119,39 +200,100 @@ class _AsistenciasResultadosScreenState
     List<String> estudiantesIds,
   ) async {
     try {
-      List<Map<String, dynamic>> todasAsistencias = [];
+      debugPrint(
+        '🔍 Cargando asistencias para ${estudiantesIds.length} estudiantes',
+      );
 
-      for (int i = 0; i < estudiantesIds.length; i += 10) {
-        final batch = estudiantesIds.skip(i).take(10).toList();
+      final Map<String, List<Map<String, dynamic>>> asistenciasPorEstudiante =
+          {};
 
-        final asistenciasSnapshot = await _firestore
-            .collection('asistencias')
-            .where('studentId', whereIn: batch)
-            .orderBy('timestamp', descending: true)
-            .get();
+      // Obtener todos los eventos
+      final eventosSnapshot = await _firestore.collection('events').get();
 
-        for (var doc in asistenciasSnapshot.docs) {
-          final data = doc.data();
-          data['id'] = doc.id;
-          todasAsistencias.add(data);
+      // ✅ CARGAR EN PARALELO: Crear lista de futures
+      final List<Future<void>> cargaFutures = [];
+
+      for (var eventDoc in eventosSnapshot.docs) {
+        for (var estudianteId in estudiantesIds) {
+          cargaFutures.add(
+            _cargarAsistenciaEstudianteEvento(
+              estudianteId,
+              eventDoc,
+              asistenciasPorEstudiante,
+            ),
+          );
         }
       }
 
-      Map<String, List<Map<String, dynamic>>> asistenciasPorEstudiante = {};
+      // Ejecutar todas las consultas en paralelo
+      await Future.wait(cargaFutures);
 
-      for (var asistencia in todasAsistencias) {
-        final studentId = asistencia['studentId'];
-        if (!asistenciasPorEstudiante.containsKey(studentId)) {
-          asistenciasPorEstudiante[studentId] = [];
-        }
-        asistenciasPorEstudiante[studentId]!.add(asistencia);
+      debugPrint(
+        '✅ Asistencias cargadas: ${asistenciasPorEstudiante.length} estudiantes',
+      );
+
+      if (mounted) {
+        setState(() {
+          _asistenciasPorEstudiante = asistenciasPorEstudiante;
+        });
       }
-
-      setState(() {
-        _asistenciasPorEstudiante = asistenciasPorEstudiante;
-      });
     } catch (e) {
-      print('Error cargando asistencias: $e');
+      debugPrint('❌ Error cargando asistencias: $e');
+    }
+  }
+
+  Future<void> _cargarAsistenciaEstudianteEvento(
+    String estudianteId,
+    DocumentSnapshot eventDoc,
+    Map<String, List<Map<String, dynamic>>> asistenciasPorEstudiante,
+  ) async {
+    try {
+      final parts = estudianteId.split('/');
+      if (parts.length != 2) return;
+
+      final studentId = parts[1];
+      final eventId = eventDoc.id;
+      final eventData = eventDoc.data() as Map<String, dynamic>;
+
+      final scansSnapshot = await _firestore
+          .collection('events')
+          .doc(eventId)
+          .collection('asistencias')
+          .doc(studentId)
+          .collection('scans')
+          .orderBy('timestamp', descending: true)
+          .get();
+
+      for (var scanDoc in scansSnapshot.docs) {
+        final scanData = scanDoc.data();
+
+        if (scanData['timestamp'] == null) continue;
+
+        final asistencia = {
+          'id': scanDoc.id,
+          'timestamp': scanData['timestamp'],
+          'categoria': scanData['categoria'] ?? 'Sin categoría',
+          'tipoInvestigacion': scanData['categoria'] ?? 'Sin categoría',
+          'codigoProyecto': scanData['codigoProyecto'] ?? 'Sin código',
+          'tituloProyecto': scanData['tituloProyecto'] ?? 'Sin título',
+          'grupo': scanData['grupo'],
+          'qrId': scanData['qrId'],
+          'registrationMethod': scanData['registrationMethod'] ?? 'qr_scan',
+          'eventId': eventId,
+          'eventName': eventData['name'] ?? 'Sin nombre',
+          'eventDescription': eventData['description'] ?? '',
+          'eventDate': eventData['date'],
+          'eventFacultad': eventData['facultad'] ?? '',
+          'eventCarrera': eventData['carrera'] ?? '',
+        };
+
+        asistenciasPorEstudiante.putIfAbsent(estudianteId, () => []);
+        asistenciasPorEstudiante[estudianteId]!.add(asistencia);
+      }
+    } catch (e) {
+      debugPrint(
+        '⚠️ Error en evento ${eventDoc.id} para estudiante $estudianteId: $e',
+      );
     }
   }
 
@@ -159,15 +301,15 @@ class _AsistenciasResultadosScreenState
     List<Map<String, dynamic>> resultado = List.from(_estudiantes);
 
     if (_cicloSeleccionado != null) {
-      resultado = resultado.where((e) {
-        return e['ciclo']?.toString() == _cicloSeleccionado;
-      }).toList();
+      resultado = resultado
+          .where((e) => e['ciclo']?.toString() == _cicloSeleccionado)
+          .toList();
     }
 
     if (_grupoSeleccionado != null) {
-      resultado = resultado.where((e) {
-        return e['grupo']?.toString() == _grupoSeleccionado;
-      }).toList();
+      resultado = resultado
+          .where((e) => e['grupo']?.toString() == _grupoSeleccionado)
+          .toList();
     }
 
     if (_searchTerm.isNotEmpty) {
@@ -187,9 +329,23 @@ class _AsistenciasResultadosScreenState
       }).toList();
     }
 
-    setState(() {
-      _estudiantesFiltrados = resultado;
+    // ORDENAR: Primero los que tienen asistencias, luego los que no
+    resultado.sort((a, b) {
+      final asistenciasA = _asistenciasPorEstudiante[a['id']]?.length ?? 0;
+      final asistenciasB = _asistenciasPorEstudiante[b['id']]?.length ?? 0;
+
+      if (asistenciasA == 0 && asistenciasB > 0) return 1;
+      if (asistenciasA > 0 && asistenciasB == 0) return -1;
+
+      // Si ambos tienen o no tienen asistencias, ordenar por cantidad descendente
+      return asistenciasB.compareTo(asistenciasA);
     });
+
+    if (mounted) {
+      setState(() {
+        _estudiantesFiltrados = resultado;
+      });
+    }
   }
 
   void _limpiarFiltros() {
@@ -203,13 +359,18 @@ class _AsistenciasResultadosScreenState
   }
 
   void _showSnackBar(String message, {bool isError = false}) {
+    if (!mounted) return;
+
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
-        backgroundColor: isError ? Colors.red : const Color(0xFF1E3A5F),
-        duration: const Duration(seconds: 3),
+        backgroundColor: isError
+            ? Colors.red.shade600
+            : const Color(0xFF1E3A5F),
+        duration: const Duration(seconds: 2),
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        margin: const EdgeInsets.all(16),
       ),
     );
   }
@@ -227,26 +388,27 @@ class _AsistenciasResultadosScreenState
 
       _showSnackBar('Reporte generado exitosamente');
     } catch (e) {
-      _showSnackBar('Error al generar reporte: $e', isError: true);
+      _showSnackBar('Error al generar reporte', isError: true);
     }
   }
 
   Color _getColorByCategoria(String? categoria) {
-    if (categoria == null || categoria.isEmpty) return Colors.grey;
-    final hash = categoria.hashCode;
+    if (categoria == null || categoria.isEmpty) return Colors.grey.shade400;
+
     final colors = [
       const Color(0xFF1E3A5F),
-      Colors.green,
-      Colors.orange,
-      Colors.purple,
-      Colors.teal,
-      Colors.indigo,
-      Colors.pink,
-      Colors.amber,
-      Colors.cyan,
-      Colors.lime,
+      Colors.green.shade600,
+      Colors.orange.shade600,
+      Colors.purple.shade600,
+      Colors.teal.shade600,
+      Colors.indigo.shade600,
+      Colors.pink.shade600,
+      Colors.amber.shade700,
+      Colors.cyan.shade600,
+      Colors.lime.shade700,
     ];
-    return colors[hash.abs() % colors.length];
+
+    return colors[categoria.hashCode.abs() % colors.length];
   }
 
   String _getIniciales(String nombre) {
@@ -258,254 +420,260 @@ class _AsistenciasResultadosScreenState
     return nombre[0].toUpperCase();
   }
 
+  // ═══════════════════════════════════════════════════════════════
+  // WIDGETS DE UI
+  // ═══════════════════════════════════════════════════════════════
+
   Widget _buildFiltrosSection() {
     final hayFiltrosActivos =
         _cicloSeleccionado != null ||
         _grupoSeleccionado != null ||
         _searchTerm.isNotEmpty;
 
-    return TweenAnimationBuilder<double>(
-      tween: Tween(begin: 0.0, end: 1.0),
-      duration: const Duration(milliseconds: 600),
-      curve: Curves.easeOutCubic,
-      builder: (context, value, child) {
-        return Transform.translate(
-          offset: Offset(0, 20 * (1 - value)),
-          child: Opacity(opacity: value, child: child),
-        );
-      },
-      child: Card(
-        elevation: 4,
-        shadowColor: Colors.black26,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        margin: const EdgeInsets.only(bottom: 16),
-        child: Padding(
-          padding: const EdgeInsets.all(20.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF1E3A5F).withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: const Icon(
-                      Icons.filter_list,
-                      color: Color(0xFF1E3A5F),
-                      size: 24,
-                    ),
+    return Card(
+      elevation: 2,
+      shadowColor: Colors.black12,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      margin: const EdgeInsets.only(bottom: 16),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1E3A5F).withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
                   ),
-                  const SizedBox(width: 12),
-                  const Text(
+                  child: const Icon(
+                    Icons.filter_list,
+                    color: Color(0xFF1E3A5F),
+                    size: 18,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                const Expanded(
+                  child: Text(
                     'Filtros',
                     style: TextStyle(
-                      fontSize: 20,
+                      fontSize: 16,
                       fontWeight: FontWeight.bold,
                       color: Color(0xFF1E3A5F),
                     ),
                   ),
-                  const Spacer(),
-                  if (hayFiltrosActivos)
-                    AnimatedScale(
-                      scale: hayFiltrosActivos ? 1.0 : 0.0,
-                      duration: const Duration(milliseconds: 300),
-                      child: TextButton.icon(
-                        onPressed: _limpiarFiltros,
-                        icon: const Icon(Icons.clear, size: 18),
-                        label: const Text('Limpiar'),
-                        style: TextButton.styleFrom(
-                          foregroundColor: Colors.red,
-                          backgroundColor: Colors.red.withOpacity(0.1),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                        ),
-                      ),
+                ),
+                if (hayFiltrosActivos)
+                  TextButton.icon(
+                    onPressed: _limpiarFiltros,
+                    icon: const Icon(Icons.clear, size: 14),
+                    label: const Text(
+                      'Limpiar',
+                      style: TextStyle(fontSize: 12),
                     ),
-                ],
-              ),
-              const SizedBox(height: 16),
+                    style: TextButton.styleFrom(
+                      foregroundColor: Colors.red.shade700,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 14),
 
-              // Barra de búsqueda
-              TextField(
-                controller: _searchController,
-                decoration: InputDecoration(
-                  hintText: 'Buscar por nombre, DNI o código...',
-                  hintStyle: TextStyle(color: Colors.grey[400]),
-                  prefixIcon: const Icon(
-                    Icons.search,
-                    color: Color(0xFF1E3A5F),
-                  ),
-                  suffixIcon: _searchTerm.isNotEmpty
-                      ? IconButton(
-                          icon: const Icon(Icons.clear),
-                          onPressed: () {
-                            _searchController.clear();
-                            setState(() {
-                              _searchTerm = '';
-                            });
-                            _aplicarFiltros();
-                          },
-                        )
-                      : null,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(15),
-                    borderSide: BorderSide.none,
-                  ),
-                  filled: true,
-                  fillColor: const Color(0xFFF5F5F5),
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 20,
-                    vertical: 16,
+            // Barra de búsqueda
+            TextField(
+              controller: _searchController,
+              decoration: InputDecoration(
+                hintText: 'Buscar por nombre, DNI o código...',
+                hintStyle: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                prefixIcon: const Icon(
+                  Icons.search,
+                  color: Color(0xFF1E3A5F),
+                  size: 18,
+                ),
+                suffixIcon: _searchTerm.isNotEmpty
+                    ? IconButton(
+                        icon: const Icon(Icons.clear, size: 18),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                        onPressed: () {
+                          _searchController.clear();
+                          setState(() => _searchTerm = '');
+                          _aplicarFiltros();
+                        },
+                      )
+                    : null,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide.none,
+                ),
+                filled: true,
+                fillColor: Colors.grey.shade50,
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 12,
+                ),
+                isDense: true,
+              ),
+              style: const TextStyle(fontSize: 13),
+              onChanged: (value) {
+                setState(() => _searchTerm = value);
+                _aplicarFiltros();
+              },
+            ),
+            const SizedBox(height: 12),
+
+            // Filtros de ciclo y grupo
+            Row(
+              children: [
+                Expanded(
+                  child: DropdownButtonFormField<String>(
+                    value: _cicloSeleccionado,
+                    decoration: InputDecoration(
+                      labelText: 'Ciclo',
+                      labelStyle: const TextStyle(
+                        color: Color(0xFF1E3A5F),
+                        fontSize: 12,
+                      ),
+                      prefixIcon: const Icon(
+                        Icons.school,
+                        color: Color(0xFF1E3A5F),
+                        size: 18,
+                      ),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide.none,
+                      ),
+                      filled: true,
+                      fillColor: Colors.grey.shade50,
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 10,
+                      ),
+                      isDense: true,
+                    ),
+                    style: const TextStyle(fontSize: 13, color: Colors.black87),
+                    isExpanded: true,
+                    items: [
+                      const DropdownMenuItem(
+                        value: null,
+                        child: Text('Todos', style: TextStyle(fontSize: 13)),
+                      ),
+                      ..._ciclosDisponibles.map((ciclo) {
+                        return DropdownMenuItem(
+                          value: ciclo,
+                          child: Text(
+                            'C$ciclo',
+                            style: const TextStyle(fontSize: 13),
+                          ),
+                        );
+                      }),
+                    ],
+                    onChanged: (value) {
+                      setState(() => _cicloSeleccionado = value);
+                      _aplicarFiltros();
+                    },
                   ),
                 ),
-                onChanged: (value) {
-                  setState(() {
-                    _searchTerm = value;
-                  });
-                  _aplicarFiltros();
-                },
-              ),
-              const SizedBox(height: 16),
-
-              // Filtros de ciclo y grupo
-              Row(
-                children: [
-                  Expanded(
-                    child: DropdownButtonFormField<String>(
-                      value: _cicloSeleccionado,
-                      decoration: InputDecoration(
-                        labelText: 'Ciclo',
-                        labelStyle: const TextStyle(color: Color(0xFF1E3A5F)),
-                        prefixIcon: const Icon(
-                          Icons.school,
-                          color: Color(0xFF1E3A5F),
-                        ),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(15),
-                          borderSide: BorderSide.none,
-                        ),
-                        filled: true,
-                        fillColor: const Color(0xFFF5F5F5),
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 16,
-                        ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: DropdownButtonFormField<String>(
+                    value: _grupoSeleccionado,
+                    decoration: InputDecoration(
+                      labelText: 'Grupo',
+                      labelStyle: const TextStyle(
+                        color: Color(0xFF1E3A5F),
+                        fontSize: 12,
                       ),
-                      items: [
-                        const DropdownMenuItem(
-                          value: null,
-                          child: Text('Todos los ciclos'),
-                        ),
-                        ..._ciclosDisponibles.map((ciclo) {
-                          return DropdownMenuItem(
-                            value: ciclo,
-                            child: Text('Ciclo $ciclo'),
-                          );
-                        }),
-                      ],
-                      onChanged: (value) {
-                        setState(() {
-                          _cicloSeleccionado = value;
-                        });
-                        _aplicarFiltros();
-                      },
+                      prefixIcon: const Icon(
+                        Icons.group,
+                        color: Color(0xFF1E3A5F),
+                        size: 18,
+                      ),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide.none,
+                      ),
+                      filled: true,
+                      fillColor: Colors.grey.shade50,
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 10,
+                      ),
+                      isDense: true,
                     ),
+                    style: const TextStyle(fontSize: 13, color: Colors.black87),
+                    isExpanded: true,
+                    items: [
+                      const DropdownMenuItem(
+                        value: null,
+                        child: Text('Todos', style: TextStyle(fontSize: 13)),
+                      ),
+                      ..._gruposDisponibles.map((grupo) {
+                        return DropdownMenuItem(
+                          value: grupo,
+                          child: Text(
+                            'G$grupo',
+                            style: const TextStyle(fontSize: 13),
+                          ),
+                        );
+                      }),
+                    ],
+                    onChanged: (value) {
+                      setState(() => _grupoSeleccionado = value);
+                      _aplicarFiltros();
+                    },
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: DropdownButtonFormField<String>(
-                      value: _grupoSeleccionado,
-                      decoration: InputDecoration(
-                        labelText: 'Grupo',
-                        labelStyle: const TextStyle(color: Color(0xFF1E3A5F)),
-                        prefixIcon: const Icon(
-                          Icons.group,
-                          color: Color(0xFF1E3A5F),
-                        ),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(15),
-                          borderSide: BorderSide.none,
-                        ),
-                        filled: true,
-                        fillColor: const Color(0xFFF5F5F5),
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 16,
-                        ),
-                      ),
-                      items: [
-                        const DropdownMenuItem(
-                          value: null,
-                          child: Text('Todos los grupos'),
-                        ),
-                        ..._gruposDisponibles.map((grupo) {
-                          return DropdownMenuItem(
-                            value: grupo,
-                            child: Text('Grupo $grupo'),
-                          );
-                        }),
-                      ],
-                      onChanged: (value) {
-                        setState(() {
-                          _grupoSeleccionado = value;
-                        });
-                        _aplicarFiltros();
-                      },
-                    ),
-                  ),
-                ],
-              ),
-
-              // Chips de filtros activos
-              if (hayFiltrosActivos) ...[
-                const SizedBox(height: 16),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    if (_cicloSeleccionado != null)
-                      _buildFilterChip(
-                        label: 'Ciclo $_cicloSeleccionado',
-                        color: const Color(0xFF1E3A5F),
-                        onDeleted: () {
-                          setState(() {
-                            _cicloSeleccionado = null;
-                          });
-                          _aplicarFiltros();
-                        },
-                      ),
-                    if (_grupoSeleccionado != null)
-                      _buildFilterChip(
-                        label: 'Grupo $_grupoSeleccionado',
-                        color: Colors.green,
-                        onDeleted: () {
-                          setState(() {
-                            _grupoSeleccionado = null;
-                          });
-                          _aplicarFiltros();
-                        },
-                      ),
-                    if (_searchTerm.isNotEmpty)
-                      _buildFilterChip(
-                        label: 'Búsqueda: "$_searchTerm"',
-                        color: Colors.orange,
-                        onDeleted: () {
-                          _searchController.clear();
-                          setState(() {
-                            _searchTerm = '';
-                          });
-                          _aplicarFiltros();
-                        },
-                      ),
-                  ],
                 ),
               ],
+            ),
+
+            // Chips de filtros activos
+            if (hayFiltrosActivos) ...[
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: [
+                  if (_cicloSeleccionado != null)
+                    _buildFilterChip(
+                      label: 'Ciclo $_cicloSeleccionado',
+                      color: const Color(0xFF1E3A5F),
+                      onDeleted: () {
+                        setState(() => _cicloSeleccionado = null);
+                        _aplicarFiltros();
+                      },
+                    ),
+                  if (_grupoSeleccionado != null)
+                    _buildFilterChip(
+                      label: 'Grupo $_grupoSeleccionado',
+                      color: Colors.green.shade600,
+                      onDeleted: () {
+                        setState(() => _grupoSeleccionado = null);
+                        _aplicarFiltros();
+                      },
+                    ),
+                  if (_searchTerm.isNotEmpty)
+                    _buildFilterChip(
+                      label: 'Búsqueda: "$_searchTerm"',
+                      color: Colors.orange.shade600,
+                      onDeleted: () {
+                        _searchController.clear();
+                        setState(() => _searchTerm = '');
+                        _aplicarFiltros();
+                      },
+                    ),
+                ],
+              ),
             ],
-          ),
+          ],
         ),
       ),
     );
@@ -516,269 +684,209 @@ class _AsistenciasResultadosScreenState
     required Color color,
     required VoidCallback onDeleted,
   }) {
-    return AnimatedScale(
-      scale: 1.0,
-      duration: const Duration(milliseconds: 200),
-      child: Chip(
-        label: Text(
-          label,
-          style: const TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.w600,
-            fontSize: 12,
-          ),
+    return Chip(
+      label: Text(
+        label,
+        style: const TextStyle(
+          color: Colors.white,
+          fontWeight: FontWeight.w600,
+          fontSize: 11,
         ),
-        deleteIcon: const Icon(Icons.close, size: 18, color: Colors.white),
-        onDeleted: onDeleted,
-        backgroundColor: color,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       ),
+      deleteIcon: const Icon(Icons.close, size: 16, color: Colors.white),
+      onDeleted: onDeleted,
+      backgroundColor: color,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
     );
   }
 
   Widget _buildEstudianteCard(
     Map<String, dynamic> estudiante,
     List<Map<String, dynamic>> asistencias,
-    int index,
   ) {
-    final estudianteId = estudiante['id'];
+    final estudianteId = estudiante['id'] as String;
     final isExpanded = _estudiantesExpandidos.contains(estudianteId);
 
-    return TweenAnimationBuilder<double>(
-      tween: Tween(begin: 0.0, end: 1.0),
-      duration: Duration(milliseconds: 400 + (index * 50)),
-      curve: Curves.easeOutCubic,
-      builder: (context, value, child) {
-        return Transform.translate(
-          offset: Offset(0, 30 * (1 - value)),
-          child: Opacity(opacity: value, child: child),
-        );
-      },
-      child: Card(
-        elevation: 3,
-        shadowColor: Colors.black26,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        margin: const EdgeInsets.only(bottom: 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            InkWell(
-              onTap: () {
-                setState(() {
-                  if (isExpanded) {
-                    _estudiantesExpandidos.remove(estudianteId);
-                  } else {
-                    _estudiantesExpandidos.add(estudianteId);
-                  }
-                });
-              },
-              borderRadius: BorderRadius.circular(20),
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Row(
-                  children: [
-                    Hero(
-                      tag: 'avatar_$estudianteId',
-                      child: CircleAvatar(
-                        radius: 28,
-                        backgroundColor: const Color(0xFF1E3A5F),
-                        child: Text(
-                          _getIniciales(estudiante['name'] ?? ''),
-                          style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
-                            fontSize: 18,
-                          ),
-                        ),
+    return Card(
+      elevation: 1,
+      shadowColor: Colors.black12,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      margin: const EdgeInsets.only(bottom: 8),
+      child: Column(
+        children: [
+          InkWell(
+            onTap: () {
+              setState(() {
+                if (isExpanded) {
+                  _estudiantesExpandidos.remove(estudianteId);
+                } else {
+                  _estudiantesExpandidos.add(estudianteId);
+                }
+              });
+            },
+            borderRadius: BorderRadius.circular(12),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+              child: Row(
+                children: [
+                  CircleAvatar(
+                    radius: 18,
+                    backgroundColor: const Color(0xFF1E3A5F),
+                    child: Text(
+                      _getIniciales(estudiante['name'] ?? ''),
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                        fontSize: 12,
                       ),
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            estudiante['name'] ?? 'Sin nombre',
-                            style: const TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.bold,
-                              color: Color(0xFF1E3A5F),
-                            ),
-                          ),
-                          const SizedBox(height: 6),
-                          Row(
-                            children: [
-                              if (estudiante['ciclo'] != null)
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 8,
-                                    vertical: 4,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFF1E3A5F),
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                  child: Text(
-                                    'C${estudiante['ciclo']}',
-                                    style: const TextStyle(
-                                      fontSize: 11,
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                ),
-                              if (estudiante['ciclo'] != null &&
-                                  estudiante['grupo'] != null)
-                                const SizedBox(width: 6),
-                              if (estudiante['grupo'] != null)
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 8,
-                                    vertical: 4,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: Colors.green,
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                  child: Text(
-                                    'G${estudiante['grupo']}',
-                                    style: const TextStyle(
-                                      fontSize: 11,
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                ),
-                            ],
-                          ),
-                          if (estudiante['username'] != null)
-                            Padding(
-                              padding: const EdgeInsets.only(top: 4),
-                              child: Text(
-                                'Usuario: ${estudiante['username']}',
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  color: Color(0xFF64748B),
-                                  fontStyle: FontStyle.italic,
-                                ),
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 14,
-                        vertical: 8,
-                      ),
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: asistencias.isNotEmpty
-                              ? [Colors.green, Colors.green.shade700]
-                              : [Colors.red, Colors.red.shade700],
-                        ),
-                        borderRadius: BorderRadius.circular(20),
-                        boxShadow: [
-                          BoxShadow(
-                            color:
-                                (asistencias.isNotEmpty
-                                        ? Colors.green
-                                        : Colors.red)
-                                    .withOpacity(0.3),
-                            blurRadius: 8,
-                            offset: const Offset(0, 4),
-                          ),
-                        ],
-                      ),
-                      child: Text(
-                        '${asistencias.length}',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    AnimatedRotation(
-                      turns: isExpanded ? 0.5 : 0,
-                      duration: const Duration(milliseconds: 300),
-                      child: Icon(
-                        Icons.expand_more,
-                        color: const Color(0xFF1E3A5F),
-                        size: 28,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            AnimatedSize(
-              duration: const Duration(milliseconds: 300),
-              curve: Curves.easeInOut,
-              child: isExpanded
-                  ? Column(
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    flex: 1,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Divider(height: 1),
-                        Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: asistencias.isNotEmpty
-                              ? Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    const Text(
-                                      'Asistencias registradas:',
-                                      style: TextStyle(
-                                        fontSize: 15,
-                                        fontWeight: FontWeight.bold,
-                                        color: Color(0xFF1E3A5F),
-                                      ),
-                                    ),
-                                    const SizedBox(height: 12),
-                                    ...asistencias.map(
-                                      (asistencia) =>
-                                          _buildAsistenciaResumen(asistencia),
-                                    ),
-                                  ],
-                                )
-                              : Container(
-                                  padding: const EdgeInsets.all(16),
-                                  decoration: BoxDecoration(
-                                    color: Colors.red.shade50,
-                                    borderRadius: BorderRadius.circular(12),
-                                    border: Border.all(
-                                      color: Colors.red.shade200,
-                                      width: 1.5,
-                                    ),
-                                  ),
-                                  child: Row(
-                                    children: [
-                                      Icon(
-                                        Icons.info_outline,
-                                        color: Colors.red.shade600,
-                                        size: 24,
-                                      ),
-                                      const SizedBox(width: 12),
-                                      const Expanded(
-                                        child: Text(
-                                          'Este estudiante no tiene asistencias registradas',
-                                          style: TextStyle(
-                                            fontSize: 14,
-                                            color: Color(0xFF1E3A5F),
-                                            fontWeight: FontWeight.w500,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
+                        Text(
+                          estudiante['name'] ?? 'Sin nombre',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF1E3A5F),
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 3),
+                        Wrap(
+                          spacing: 3,
+                          runSpacing: 2,
+                          children: [
+                            if (estudiante['ciclo'] != null)
+                              _buildSmallBadge(
+                                'C${estudiante['ciclo']}',
+                                const Color(0xFF1E3A5F),
+                              ),
+                            if (estudiante['grupo'] != null)
+                              _buildSmallBadge(
+                                'G${estudiante['grupo']}',
+                                Colors.green.shade600,
+                              ),
+                          ],
                         ),
                       ],
-                    )
-                  : const SizedBox.shrink(),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Container(
+                    constraints: const BoxConstraints(
+                      minWidth: 24,
+                      maxWidth: 40,
+                    ),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 3,
+                    ),
+                    decoration: BoxDecoration(
+                      color: asistencias.isNotEmpty
+                          ? Colors.green.shade600
+                          : Colors.grey.shade400,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      '${asistencias.length}',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 2),
+                  SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: Icon(
+                      isExpanded ? Icons.expand_less : Icons.expand_more,
+                      color: const Color(0xFF1E3A5F),
+                      size: 20,
+                    ),
+                  ),
+                ],
+              ),
             ),
-          ],
+          ),
+          if (isExpanded)
+            Container(
+              width: double.infinity,
+              decoration: BoxDecoration(
+                color: Colors.grey.shade50,
+                borderRadius: const BorderRadius.only(
+                  bottomLeft: Radius.circular(12),
+                  bottomRight: Radius.circular(12),
+                ),
+              ),
+              padding: const EdgeInsets.all(12),
+              child: asistencias.isNotEmpty
+                  ? Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text(
+                          'Asistencias registradas:',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF1E3A5F),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        ...asistencias.map((a) => _buildAsistenciaResumen(a)),
+                      ],
+                    )
+                  : Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.info_outline,
+                          color: Colors.grey.shade600,
+                          size: 16,
+                        ),
+                        const SizedBox(width: 6),
+                        const Expanded(
+                          child: Text(
+                            'Sin asistencias registradas',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: Color(0xFF64748B),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSmallBadge(String text, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+      decoration: BoxDecoration(
+        color: color,
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(
+        text,
+        style: const TextStyle(
+          fontSize: 8,
+          color: Colors.white,
+          fontWeight: FontWeight.w600,
         ),
       ),
     );
@@ -791,154 +899,101 @@ class _AsistenciasResultadosScreenState
         asistencia['tipoInvestigacion'] ??
         'Sin categoría';
     final grupo = asistencia['grupo'];
-    final tituloProyecto = asistencia['tituloProyecto'];
-    final codigoProyecto = asistencia['codigoProyecto'];
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.all(14),
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFFE8EDF2), width: 1.5),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 4,
-            offset: const Offset(0, 2),
-          ),
-        ],
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.grey.shade200),
       ),
-      child: IntrinsicHeight(
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Container(
-              width: 4,
-              decoration: BoxDecoration(
-                color: _getColorByCategoria(categoria),
-                borderRadius: BorderRadius.circular(4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 3,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: _getColorByCategoria(categoria),
+                  borderRadius: BorderRadius.circular(2),
+                ),
               ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    asistencia['eventName'] ?? 'Sin nombre',
-                    style: const TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.bold,
-                      color: Color(0xFF1E3A5F),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      asistencia['eventName'] ?? 'Sin nombre',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF1E3A5F),
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                     ),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 6,
-                    runSpacing: 6,
-                    children: [
-                      _buildTag(
-                        label: categoria,
-                        color: _getColorByCategoria(categoria),
-                      ),
-                      if (grupo != null &&
-                          grupo.toString().trim().isNotEmpty &&
-                          grupo.toString().toLowerCase() != 'sin grupo')
-                        _buildTag(
-                          label: 'Grupo $grupo',
-                          color: const Color(0xFF17A5A1),
-                          icon: Icons.group,
-                        ),
-                      if (codigoProyecto != null &&
-                          codigoProyecto.toString().isNotEmpty)
-                        _buildTag(
-                          label: codigoProyecto,
-                          color: Colors.purple.shade600,
-                          icon: Icons.tag,
-                        ),
-                      if (timestamp != null)
-                        _buildTag(
-                          label:
-                              '${timestamp.day}/${timestamp.month}/${timestamp.year}',
-                          color: const Color(0xFF64748B),
-                        ),
-                    ],
-                  ),
-                  if (tituloProyecto != null &&
-                      tituloProyecto.toString().isNotEmpty) ...[
-                    const SizedBox(height: 8),
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: Colors.indigo.shade50,
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: Colors.indigo.shade200),
-                      ),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Icon(
-                            Icons.article,
-                            size: 16,
-                            color: Colors.indigo.shade700,
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              tituloProyecto,
-                              style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w500,
-                                color: Colors.indigo.shade900,
-                                height: 1.3,
-                              ),
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        ],
-                      ),
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 4,
+                      runSpacing: 4,
+                      children: [
+                        _buildTag(categoria, _getColorByCategoria(categoria)),
+                        if (grupo != null && grupo.toString().trim().isNotEmpty)
+                          _buildTag('G$grupo', Colors.teal.shade600),
+                      ],
                     ),
                   ],
-                ],
+                ),
               ),
+            ],
+          ),
+          if (timestamp != null) ...[
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                Icon(
+                  Icons.calendar_today,
+                  size: 12,
+                  color: Colors.grey.shade600,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  '${timestamp.day.toString().padLeft(2, '0')}/${timestamp.month.toString().padLeft(2, '0')}/${timestamp.year}',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: Colors.grey.shade600,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
             ),
           ],
-        ),
+        ],
       ),
     );
   }
 
-  Widget _buildTag({
-    required String label,
-    required Color color,
-    IconData? icon,
-  }) {
+  Widget _buildTag(String label, Color color) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
       decoration: BoxDecoration(
         color: color,
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(6),
       ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (icon != null) ...[
-            Icon(icon, size: 12, color: Colors.white),
-            const SizedBox(width: 4),
-          ],
-          Text(
-            label,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ],
+      child: Text(
+        label,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 10,
+          fontWeight: FontWeight.w600,
+        ),
       ),
     );
   }
@@ -950,127 +1005,101 @@ class _AsistenciasResultadosScreenState
       body: SafeArea(
         child: Column(
           children: [
-            // Header animado
+            // Header compacto
             FadeTransition(
               opacity: _headerAnimation,
-              child: SlideTransition(
-                position: Tween<Offset>(
-                  begin: const Offset(0, -0.5),
-                  end: Offset.zero,
-                ).animate(_headerAnimation),
-                child: Padding(
-                  padding: const EdgeInsets.all(20.0),
-                  child: Row(
-                    children: [
-                      Container(
-                        width: 50,
-                        height: 50,
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(12),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withOpacity(0.1),
-                              blurRadius: 8,
-                              offset: const Offset(0, 4),
-                            ),
-                          ],
-                        ),
-                        child: const Icon(
-                          Icons.school,
-                          color: Color(0xFF1E3A5F),
-                          size: 30,
-                        ),
+              child: Container(
+                padding: const EdgeInsets.all(16.0),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(10),
                       ),
-                      const SizedBox(width: 16),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              'Asistencias de Estudiantes',
-                              style: TextStyle(
-                                fontSize: 20,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.white,
-                              ),
-                            ),
-                            Text(
-                              '${widget.facultad} - ${widget.carrera}',
-                              style: const TextStyle(
-                                fontSize: 13,
-                                color: Colors.white70,
-                                fontWeight: FontWeight.w400,
-                              ),
-                            ),
-                          ],
-                        ),
+                      child: const Icon(
+                        Icons.school,
+                        color: Color(0xFF1E3A5F),
+                        size: 24,
                       ),
-                      Container(
-                        decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.2),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: IconButton(
-                          icon: const Icon(
-                            Icons.download,
-                            color: Colors.white,
-                            size: 24,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Asistencias',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
                           ),
-                          onPressed: _isLoading ? null : _descargarReporte,
-                          tooltip: 'Descargar Reporte Excel',
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Container(
-                        decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.2),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: IconButton(
-                          icon: const Icon(
-                            Icons.refresh,
-                            color: Colors.white,
-                            size: 24,
+                          Text(
+                            '${widget.facultad} - ${widget.carrera}',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: Colors.white70,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                           ),
-                          onPressed: _cargarDatos,
-                          tooltip: 'Actualizar',
-                        ),
+                        ],
                       ),
-                    ],
-                  ),
+                    ),
+                    IconButton(
+                      icon: const Icon(
+                        Icons.download,
+                        color: Colors.white,
+                        size: 22,
+                      ),
+                      onPressed: _isLoading ? null : _descargarReporte,
+                      tooltip: 'Descargar Excel',
+                    ),
+                    IconButton(
+                      icon: const Icon(
+                        Icons.refresh,
+                        color: Colors.white,
+                        size: 22,
+                      ),
+                      onPressed: _isLoading ? null : _cargarDatos,
+                      tooltip: 'Actualizar',
+                    ),
+                  ],
                 ),
               ),
             ),
 
-            // Content Area
+            // Content
             Expanded(
               child: Container(
                 decoration: const BoxDecoration(
-                  color: Color(0xFFE8EDF2),
+                  color: Colors.white,
                   borderRadius: BorderRadius.only(
-                    topLeft: Radius.circular(30),
-                    topRight: Radius.circular(30),
+                    topLeft: Radius.circular(24),
+                    topRight: Radius.circular(24),
                   ),
                 ),
                 child: _isLoading
-                    ? Center(
+                    ? const Center(
                         child: Column(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
                             CircularProgressIndicator(
                               valueColor: AlwaysStoppedAnimation<Color>(
-                                const Color(0xFF1E3A5F),
+                                Color(0xFF1E3A5F),
                               ),
-                              strokeWidth: 4,
+                              strokeWidth: 3,
                             ),
-                            const SizedBox(height: 20),
-                            const Text(
+                            SizedBox(height: 16),
+                            Text(
                               'Cargando estudiantes...',
                               style: TextStyle(
-                                fontSize: 16,
-                                color: Color(0xFF1E3A5F),
-                                fontWeight: FontWeight.w600,
+                                fontSize: 14,
+                                color: Color(0xFF64748B),
+                                fontWeight: FontWeight.w500,
                               ),
                             ),
                           ],
@@ -1081,188 +1110,178 @@ class _AsistenciasResultadosScreenState
                         child: Column(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            TweenAnimationBuilder<double>(
-                              tween: Tween(begin: 0.0, end: 1.0),
-                              duration: const Duration(milliseconds: 800),
-                              builder: (context, value, child) {
-                                return Transform.scale(
-                                  scale: value,
-                                  child: child,
-                                );
-                              },
-                              child: Container(
-                                padding: const EdgeInsets.all(24),
-                                decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  shape: BoxShape.circle,
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: Colors.black.withOpacity(0.1),
-                                      blurRadius: 20,
-                                      offset: const Offset(0, 10),
-                                    ),
-                                  ],
-                                ),
-                                child: const Icon(
-                                  Icons.search_off,
-                                  size: 80,
-                                  color: Color(0xFF64748B),
-                                ),
-                              ),
+                            Icon(
+                              Icons.search_off,
+                              size: 64,
+                              color: Colors.grey.shade400,
                             ),
-                            const SizedBox(height: 24),
+                            const SizedBox(height: 16),
                             const Text(
                               'No se encontraron estudiantes',
                               style: TextStyle(
-                                fontSize: 20,
+                                fontSize: 18,
                                 fontWeight: FontWeight.bold,
                                 color: Color(0xFF1E3A5F),
                               ),
                             ),
                             const SizedBox(height: 8),
-                            const Text(
+                            Text(
                               'Intenta con otros filtros',
                               style: TextStyle(
                                 fontSize: 14,
-                                color: Color(0xFF64748B),
+                                color: Colors.grey.shade600,
                               ),
                             ),
                           ],
                         ),
                       )
-                    : SingleChildScrollView(
-                        padding: const EdgeInsets.all(20.0),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            // Sección de filtros
-                            _buildFiltrosSection(),
-
-                            // Contador de resultados
-                            Container(
-                              padding: const EdgeInsets.all(16),
-                              decoration: BoxDecoration(
-                                color: Colors.white,
-                                borderRadius: BorderRadius.circular(15),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.black.withOpacity(0.05),
-                                    blurRadius: 8,
-                                    offset: const Offset(0, 2),
-                                  ),
-                                ],
-                              ),
-                              child: Row(
+                    : CustomScrollView(
+                        controller: _scrollController,
+                        slivers: [
+                          SliverToBoxAdapter(
+                            child: Padding(
+                              padding: const EdgeInsets.all(16.0),
+                              child: Column(
                                 children: [
+                                  // Sección de filtros
+                                  _buildFiltrosSection(),
+
+                                  // Contador de resultados
                                   Container(
-                                    padding: const EdgeInsets.all(10),
+                                    padding: const EdgeInsets.all(14),
                                     decoration: BoxDecoration(
-                                      color: const Color(
-                                        0xFF1E3A5F,
-                                      ).withOpacity(0.1),
-                                      borderRadius: BorderRadius.circular(10),
+                                      color: Colors.grey.shade50,
+                                      borderRadius: BorderRadius.circular(12),
+                                      border: Border.all(
+                                        color: Colors.grey.shade200,
+                                      ),
                                     ),
-                                    child: const Icon(
-                                      Icons.people,
-                                      color: Color(0xFF1E3A5F),
-                                      size: 24,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
+                                    child: Row(
                                       children: [
-                                        const Text(
-                                          'Total de estudiantes',
-                                          style: TextStyle(
-                                            fontSize: 12,
-                                            color: Color(0xFF64748B),
+                                        Container(
+                                          padding: const EdgeInsets.all(8),
+                                          decoration: BoxDecoration(
+                                            color: const Color(
+                                              0xFF1E3A5F,
+                                            ).withOpacity(0.1),
+                                            borderRadius: BorderRadius.circular(
+                                              8,
+                                            ),
+                                          ),
+                                          child: const Icon(
+                                            Icons.people,
+                                            color: Color(0xFF1E3A5F),
+                                            size: 20,
                                           ),
                                         ),
-                                        Row(
-                                          children: [
-                                            Text(
-                                              '${_estudiantesFiltrados.length}',
-                                              style: const TextStyle(
-                                                fontSize: 24,
-                                                fontWeight: FontWeight.bold,
-                                                color: Color(0xFF1E3A5F),
-                                              ),
-                                            ),
-                                            if (_estudiantesFiltrados.length !=
-                                                _estudiantes.length)
-                                              Text(
-                                                ' de ${_estudiantes.length}',
-                                                style: const TextStyle(
-                                                  fontSize: 16,
+                                        const SizedBox(width: 12),
+                                        Expanded(
+                                          child: Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              const Text(
+                                                'Total de estudiantes',
+                                                style: TextStyle(
+                                                  fontSize: 11,
                                                   color: Color(0xFF64748B),
                                                 ),
                                               ),
-                                          ],
+                                              Row(
+                                                children: [
+                                                  Text(
+                                                    '${_estudiantesFiltrados.length}',
+                                                    style: const TextStyle(
+                                                      fontSize: 22,
+                                                      fontWeight:
+                                                          FontWeight.bold,
+                                                      color: Color(0xFF1E3A5F),
+                                                    ),
+                                                  ),
+                                                  if (_estudiantesFiltrados
+                                                          .length !=
+                                                      _estudiantes.length)
+                                                    Text(
+                                                      ' de ${_estudiantes.length}',
+                                                      style: const TextStyle(
+                                                        fontSize: 14,
+                                                        color: Color(
+                                                          0xFF64748B,
+                                                        ),
+                                                      ),
+                                                    ),
+                                                ],
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                        if (_isLoadingAsistencias)
+                                          const SizedBox(
+                                            width: 20,
+                                            height: 20,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                              valueColor:
+                                                  AlwaysStoppedAnimation<Color>(
+                                                    Color(0xFF1E3A5F),
+                                                  ),
+                                            ),
+                                          ),
+                                      ],
+                                    ),
+                                  ),
+                                  const SizedBox(height: 16),
+                                ],
+                              ),
+                            ),
+                          ),
+
+                          // Lista de estudiantes
+                          _estudiantesFiltrados.isEmpty
+                              ? SliverFillRemaining(
+                                  child: Center(
+                                    child: Column(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      children: [
+                                        Icon(
+                                          Icons.filter_alt_off,
+                                          size: 64,
+                                          color: Colors.grey.shade400,
+                                        ),
+                                        const SizedBox(height: 16),
+                                        const Text(
+                                          'No hay resultados',
+                                          style: TextStyle(
+                                            fontSize: 18,
+                                            fontWeight: FontWeight.bold,
+                                            color: Color(0xFF1E3A5F),
+                                          ),
+                                        ),
+                                        const SizedBox(height: 8),
+                                        Text(
+                                          'Intenta ajustar los filtros',
+                                          style: TextStyle(
+                                            fontSize: 14,
+                                            color: Colors.grey.shade600,
+                                          ),
                                         ),
                                       ],
                                     ),
                                   ),
-                                ],
-                              ),
-                            ),
-                            const SizedBox(height: 16),
-
-                            // Lista de estudiantes
-                            _estudiantesFiltrados.isEmpty
-                                ? Card(
-                                    elevation: 3,
-                                    shadowColor: Colors.black26,
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(20),
-                                    ),
-                                    child: Padding(
-                                      padding: const EdgeInsets.all(40.0),
-                                      child: Column(
-                                        children: [
-                                          Container(
-                                            padding: const EdgeInsets.all(20),
-                                            decoration: BoxDecoration(
-                                              color: const Color(
-                                                0xFF1E3A5F,
-                                              ).withOpacity(0.1),
-                                              shape: BoxShape.circle,
-                                            ),
-                                            child: const Icon(
-                                              Icons.filter_alt_off,
-                                              size: 64,
-                                              color: Color(0xFF64748B),
-                                            ),
-                                          ),
-                                          const SizedBox(height: 20),
-                                          const Text(
-                                            'No hay resultados',
-                                            style: TextStyle(
-                                              fontSize: 20,
-                                              fontWeight: FontWeight.bold,
-                                              color: Color(0xFF1E3A5F),
-                                            ),
-                                          ),
-                                          const SizedBox(height: 8),
-                                          const Text(
-                                            'Intenta ajustar los filtros',
-                                            style: TextStyle(
-                                              fontSize: 14,
-                                              color: Color(0xFF64748B),
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  )
-                                : ListView.builder(
-                                    shrinkWrap: true,
-                                    physics:
-                                        const NeverScrollableScrollPhysics(),
-                                    itemCount: _estudiantesFiltrados.length,
-                                    itemBuilder: (context, index) {
+                                )
+                              : SliverPadding(
+                                  padding: const EdgeInsets.fromLTRB(
+                                    16,
+                                    0,
+                                    16,
+                                    16,
+                                  ),
+                                  sliver: SliverList(
+                                    delegate: SliverChildBuilderDelegate((
+                                      context,
+                                      index,
+                                    ) {
                                       final estudiante =
                                           _estudiantesFiltrados[index];
                                       final asistencias =
@@ -1271,12 +1290,11 @@ class _AsistenciasResultadosScreenState
                                       return _buildEstudianteCard(
                                         estudiante,
                                         asistencias,
-                                        index,
                                       );
-                                    },
+                                    }, childCount: _estudiantesFiltrados.length),
                                   ),
-                          ],
-                        ),
+                                ),
+                        ],
                       ),
               ),
             ),

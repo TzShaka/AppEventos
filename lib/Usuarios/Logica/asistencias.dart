@@ -18,8 +18,11 @@ class _AsistenciasScreenState extends State<AsistenciasScreen>
   String? _currentUserId;
   String? _currentUserName;
   bool _isLoadingAsistencias = false;
-  List<Map<String, dynamic>> _misAsistencias = [];
+
+  // ✅ NUEVA ESTRUCTURA: Guardamos eventos con sus asistencias
+  List<Map<String, dynamic>> _eventosConAsistencias = [];
   List<Map<String, dynamic>> _asistenciasFiltradas = [];
+
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
 
@@ -29,6 +32,12 @@ class _AsistenciasScreenState extends State<AsistenciasScreen>
   String? _eventoSeleccionado;
   List<Map<String, dynamic>> _eventosDisponibles = [];
 
+  // ✅ CACHÉ DE EVENTOS (evita recargar eventos repetidamente)
+  final Map<String, Map<String, dynamic>> _eventosCache = {};
+  // ✅ OPTIMIZACIÓN: Paginación para eventos
+  static const int _eventosPorPagina = 20;
+  DocumentSnapshot? _ultimoEventoCargado;
+  bool _hayMasEventos = true;
   @override
   void initState() {
     super.initState();
@@ -53,9 +62,9 @@ class _AsistenciasScreenState extends State<AsistenciasScreen>
   void _calcularEventosDisponibles() {
     final Map<String, Map<String, dynamic>> eventosMap = {};
 
-    for (var asistencia in _misAsistencias) {
-      final eventId = asistencia['eventId'];
-      final eventName = asistencia['eventName'];
+    for (var eventoData in _eventosConAsistencias) {
+      final eventId = eventoData['eventId'];
+      final eventName = eventoData['eventName'];
 
       if (eventId != null &&
           eventName != null &&
@@ -112,28 +121,51 @@ class _AsistenciasScreenState extends State<AsistenciasScreen>
 
   void _filtrarAsistencias() {
     setState(() {
-      _asistenciasFiltradas = _misAsistencias.where((asistencia) {
-        // Filtro por periodo
-        bool cumplePeriodo = true;
-        if (_periodoSeleccionado != null) {
-          final periodo = _periodosDisponibles.firstWhere(
-            (p) => p['id'] == _periodoSeleccionado,
-            orElse: () => {},
-          );
+      _asistenciasFiltradas = [];
 
-          if (periodo.isNotEmpty) {
-            cumplePeriodo = _asistenciaPerteneceAPeriodo(asistencia, periodo);
+      for (var eventoData in _eventosConAsistencias) {
+        for (var asistencia in eventoData['asistencias'] ?? []) {
+          // Filtro por periodo
+          bool cumplePeriodo = true;
+          if (_periodoSeleccionado != null) {
+            final periodo = _periodosDisponibles.firstWhere(
+              (p) => p['id'] == _periodoSeleccionado,
+              orElse: () => {},
+            );
+
+            if (periodo.isNotEmpty) {
+              cumplePeriodo = _asistenciaPerteneceAPeriodo(asistencia, periodo);
+            }
+          }
+
+          // Filtro por evento
+          bool cumpleEvento = true;
+          if (_eventoSeleccionado != null) {
+            cumpleEvento = eventoData['eventId'] == _eventoSeleccionado;
+          }
+
+          if (cumplePeriodo && cumpleEvento) {
+            // ✅ Agregar datos del evento a la asistencia
+            _asistenciasFiltradas.add({
+              ...asistencia,
+              'eventId': eventoData['eventId'],
+              'eventName': eventoData['eventName'],
+              'eventDescription': eventoData['eventDescription'],
+              'eventDate': eventoData['eventDate'],
+              'eventFacultad': eventoData['eventFacultad'],
+              'eventCarrera': eventoData['eventCarrera'],
+            });
           }
         }
+      }
 
-        // Filtro por evento
-        bool cumpleEvento = true;
-        if (_eventoSeleccionado != null) {
-          cumpleEvento = asistencia['eventId'] == _eventoSeleccionado;
-        }
-
-        return cumplePeriodo && cumpleEvento;
-      }).toList();
+      // Ordenar por fecha (más reciente primero)
+      _asistenciasFiltradas.sort((a, b) {
+        final timestampA = (a['timestamp'] as Timestamp?)?.toDate();
+        final timestampB = (b['timestamp'] as Timestamp?)?.toDate();
+        if (timestampA == null || timestampB == null) return 0;
+        return timestampB.compareTo(timestampA);
+      });
     });
   }
 
@@ -155,80 +187,117 @@ class _AsistenciasScreenState extends State<AsistenciasScreen>
     }
   }
 
-  Future<void> _cargarMisAsistencias() async {
+  Future<void> _cargarMisAsistencias({bool cargarMas = false}) async {
     if (_currentUserId == null) return;
 
-    setState(() {
-      _isLoadingAsistencias = true;
-      _misAsistencias.clear();
-    });
+    if (!cargarMas) {
+      setState(() {
+        _isLoadingAsistencias = true;
+        _eventosConAsistencias.clear();
+        _ultimoEventoCargado = null;
+        _hayMasEventos = true;
+      });
+    }
 
     try {
-      final QuerySnapshot snapshot = await _firestore
-          .collection('asistencias')
-          .where('studentId', isEqualTo: _currentUserId)
-          .orderBy('timestamp', descending: true)
-          .get();
-
-      List<Map<String, dynamic>> asistenciasList = [];
-
-      for (var doc in snapshot.docs) {
-        final data = doc.data() as Map<String, dynamic>;
-        data['id'] = doc.id;
-
-        if (data['eventName'] != null && data['eventDescription'] != null) {
-          asistenciasList.add(data);
-        } else if (data['eventId'] != null) {
-          try {
-            final eventDoc = await _firestore
-                .collection('events')
-                .doc(data['eventId'])
-                .get();
-
-            if (eventDoc.exists) {
-              final eventData = eventDoc.data() as Map<String, dynamic>;
-              data['eventName'] =
-                  data['eventName'] ?? eventData['name'] ?? 'Sin nombre';
-              data['eventDescription'] =
-                  data['eventDescription'] ?? eventData['description'] ?? '';
-              data['eventDate'] = data['eventDate'] ?? eventData['date'];
-              data['eventFacultad'] =
-                  data['eventFacultad'] ?? eventData['facultad'] ?? '';
-              data['eventCarrera'] =
-                  data['eventCarrera'] ?? eventData['carrera'] ?? '';
-            } else {
-              data['eventName'] = 'Evento eliminado';
-              data['eventDescription'] = '';
-              data['eventDate'] = null;
-              data['eventLocation'] = '';
-              data['eventFacultad'] = '';
-              data['eventCarrera'] = '';
-            }
-            asistenciasList.add(data);
-          } catch (e) {
-            print('Error obteniendo datos del evento: $e');
-            data['eventName'] = 'Error cargando evento';
-            data['eventDescription'] = '';
-            asistenciasList.add(data);
-          }
-        } else {
-          data['eventName'] = 'Sin evento';
-          data['eventDescription'] = '';
-          asistenciasList.add(data);
-        }
+      final parts = _currentUserId!.split('/');
+      if (parts.length != 2) {
+        throw Exception('ID de usuario inválido');
       }
 
-      setState(() {
-        _misAsistencias = asistenciasList;
-      });
+      final studentId = parts[1];
 
-      await _cargarPeriodosActivos();
-      _calcularEventosDisponibles();
+      print('═══════════════════════════════════════════════════════');
+      print('👤 USER ID COMPLETO: $_currentUserId');
+      print('   📂 Carrera Path: ${parts[0]}');
+      print('   🆔 Student ID: $studentId');
+      print('═══════════════════════════════════════════════════════');
 
-      _showSnackBar('Se cargaron ${_misAsistencias.length} asistencia(s)');
+      // ═══════════════════════════════════════════════════════════════
+      // PASO 1: OBTENER TODOS LOS EVENTOS (sin orderBy para evitar índices)
+      // ═══════════════════════════════════════════════════════════════
+      print('🔍 Buscando eventos...');
+
+      Query eventosQuery = _firestore
+          .collection('events')
+          .orderBy('createdAt', descending: true)
+          .limit(_eventosPorPagina);
+
+      if (cargarMas && _ultimoEventoCargado != null) {
+        eventosQuery = eventosQuery.startAfterDocument(_ultimoEventoCargado!);
+      }
+
+      final eventosSnapshot = await eventosQuery.get();
+
+      print('📊 Eventos encontrados: ${eventosSnapshot.docs.length}');
+
+      if (eventosSnapshot.docs.isEmpty) {
+        setState(() {
+          _hayMasEventos = false;
+        });
+        if (!cargarMas) {
+          print('⚠️ No hay eventos en la base de datos');
+        }
+      } else {
+        _ultimoEventoCargado = eventosSnapshot.docs.last;
+
+        if (eventosSnapshot.docs.length < _eventosPorPagina) {
+          _hayMasEventos = false;
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // PASO 2: POR CADA EVENTO, VERIFICAR SI EL ESTUDIANTE TIENE ASISTENCIAS
+        // ═══════════════════════════════════════════════════════════════
+        final List<Future<void>> cargaEventos = [];
+
+        for (var eventDoc in eventosSnapshot.docs) {
+          cargaEventos.add(_cargarAsistenciasDeEvento(eventDoc, studentId));
+        }
+
+        // ✅ EJECUTAR TODAS LAS CONSULTAS EN PARALELO
+        await Future.wait(cargaEventos);
+
+        print(
+          '✅ Total de eventos con asistencias: ${_eventosConAsistencias.length}',
+        );
+
+        // Ordenar por fecha después de cargar (en memoria)
+        _eventosConAsistencias.sort((a, b) {
+          final dateA = (a['eventDate'] as Timestamp?)?.toDate();
+          final dateB = (b['eventDate'] as Timestamp?)?.toDate();
+          if (dateA == null || dateB == null) return 0;
+          return dateB.compareTo(dateA);
+        });
+
+        // ═══════════════════════════════════════════════════════════════
+        // PASO 3: CARGAR PERÍODOS Y FILTRAR
+        // ═══════════════════════════════════════════════════════════════
+        // PASO 3: CARGAR PERÍODOS Y FILTRAR
+        if (!cargarMas) {
+          await _cargarPeriodosActivos();
+          _calcularEventosDisponibles();
+        } else {
+          _filtrarAsistencias();
+          _calcularEventosDisponibles();
+        }
+
+        // Contar total de asistencias
+        int totalAsistencias = 0;
+        for (var evento in _eventosConAsistencias) {
+          totalAsistencias += (evento['asistencias'] as List).length;
+        }
+
+        if (totalAsistencias > 0) {
+          _showSnackBar(
+            'Se cargaron $totalAsistencias asistencia(s) de ${_eventosConAsistencias.length} evento(s)',
+          );
+        } else {
+          print('⚠️ No se encontraron asistencias para este estudiante');
+        }
+      }
     } catch (e) {
       _showSnackBar('Error al cargar asistencias: $e', isError: true);
-      print('Error detallado: $e');
+      print('❌ Error detallado: $e');
     } finally {
       setState(() {
         _isLoadingAsistencias = false;
@@ -236,7 +305,117 @@ class _AsistenciasScreenState extends State<AsistenciasScreen>
     }
   }
 
+  Future<void> _cargarAsistenciasDeEvento(
+    DocumentSnapshot eventDoc,
+    String studentId,
+  ) async {
+    try {
+      final eventId = eventDoc.id;
+      final eventData = eventDoc.data() as Map<String, dynamic>;
+
+      print('🔍 Buscando asistencias en evento: $eventId');
+      print('   👤 Estudiante: $studentId');
+      final resumenDoc = await _firestore
+          .collection('events')
+          .doc(eventId)
+          .collection('asistencias')
+          .doc(studentId)
+          .get();
+
+      if (!resumenDoc.exists) {
+        // No hay asistencias de este estudiante en este evento
+        return;
+      }
+
+      print('📄 Resumen encontrado para evento: $eventId');
+
+      // Ahora cargar todos los scans
+      final scansSnapshot = await _firestore
+          .collection('events')
+          .doc(eventId)
+          .collection('asistencias')
+          .doc(studentId)
+          .collection('scans')
+          .orderBy('timestamp', descending: true)
+          .get();
+
+      print('   📊 Scans encontrados: ${scansSnapshot.docs.length}');
+
+      if (scansSnapshot.docs.isEmpty) {
+        print('   ⚠️ No se encontraron escaneos en evento $eventId');
+        return;
+      }
+
+      // ═══════════════════════════════════════════════════════════════
+      // CONVERTIR LOS ESCANEOS A FORMATO DE ASISTENCIAS
+      // ═══════════════════════════════════════════════════════════════
+      final List<Map<String, dynamic>> asistencias = [];
+
+      for (var scanDoc in scansSnapshot.docs) {
+        final scanData = scanDoc.data();
+
+        print('   📄 Scan ID: ${scanDoc.id}');
+        print('      - Timestamp: ${scanData['timestamp']}');
+        print('      - Categoria: ${scanData['categoria']}');
+
+        // ✅ Validar que tenga timestamp
+        if (scanData['timestamp'] == null) {
+          print('   ⚠️ Escaneo sin timestamp: ${scanDoc.id}');
+          continue;
+        }
+
+        asistencias.add({
+          'id': scanDoc.id,
+          'timestamp': scanData['timestamp'],
+          'categoria': scanData['categoria'] ?? 'Sin categoría',
+          'tipoInvestigacion': scanData['categoria'] ?? 'Sin categoría',
+          'codigoProyecto': scanData['codigoProyecto'] ?? 'Sin código',
+          'tituloProyecto': scanData['tituloProyecto'] ?? 'Sin título',
+          'grupo': scanData['grupo'],
+          'qrId': scanData['qrId'],
+          'registrationMethod': scanData['registrationMethod'] ?? 'qr_scan',
+        });
+      }
+
+      if (asistencias.isEmpty) {
+        print(
+          '   ⚠️ Todos los escaneos fueron filtrados (sin timestamp válido)',
+        );
+        return;
+      }
+
+      // ═══════════════════════════════════════════════════════════════
+      // GUARDAR EL EVENTO CON SUS ASISTENCIAS
+      // ═══════════════════════════════════════════════════════════════
+      _eventosConAsistencias.add({
+        'eventId': eventId,
+        'eventName': eventData['name'] ?? 'Sin nombre',
+        'eventDescription': eventData['description'] ?? '',
+        'eventDate': eventData['date'],
+        'eventFacultad': eventData['facultad'] ?? '',
+        'eventCarrera': eventData['carrera'] ?? '',
+        'asistencias': asistencias,
+      });
+
+      // ✅ CACHEAR DATOS DEL EVENTO
+      _eventosCache[eventId] = {
+        'name': eventData['name'],
+        'description': eventData['description'],
+        'date': eventData['date'],
+        'facultad': eventData['facultad'],
+        'carrera': eventData['carrera'],
+      };
+
+      print('   ✅ Evento $eventId cargado: ${asistencias.length} asistencias');
+    } catch (e) {
+      print('❌ Error cargando evento ${eventDoc.id}: $e');
+      print('   Stack trace: ${StackTrace.current}');
+    }
+  }
+
   void _showSnackBar(String message, {bool isError = false}) {
+    if (!mounted) return;
+
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Row(
@@ -1045,7 +1224,7 @@ class _AsistenciasScreenState extends State<AsistenciasScreen>
                       color: Colors.white,
                       size: 28,
                     ),
-                    onPressed: _cargarMisAsistencias,
+                    onPressed: () => _cargarMisAsistencias(),
                     tooltip: 'Actualizar',
                   ),
                 ],
@@ -1063,7 +1242,7 @@ class _AsistenciasScreenState extends State<AsistenciasScreen>
                 child: _currentUserId == null
                     ? const Center(child: CircularProgressIndicator())
                     : RefreshIndicator(
-                        onRefresh: _cargarMisAsistencias,
+                        onRefresh: () => _cargarMisAsistencias(),
                         color: const Color(0xFF1E3A5F),
                         child: SingleChildScrollView(
                           physics: const AlwaysScrollableScrollPhysics(),
@@ -1076,6 +1255,39 @@ class _AsistenciasScreenState extends State<AsistenciasScreen>
                                 _buildFiltroPeriodo(),
                                 _buildColeccionSellos(),
                                 _buildAsistenciasCard(),
+
+                                // ✅ Botón "Cargar más eventos"
+                                if (_hayMasEventos && !_isLoadingAsistencias)
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 20),
+                                    child: Center(
+                                      child: OutlinedButton.icon(
+                                        onPressed: () => _cargarMisAsistencias(
+                                          cargarMas: true,
+                                        ),
+                                        icon: const Icon(Icons.expand_more),
+                                        label: const Text('Cargar más eventos'),
+                                        style: OutlinedButton.styleFrom(
+                                          foregroundColor: const Color(
+                                            0xFF1E3A5F,
+                                          ),
+                                          side: const BorderSide(
+                                            color: Color(0xFF1E3A5F),
+                                            width: 2,
+                                          ),
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 24,
+                                            vertical: 14,
+                                          ),
+                                          shape: RoundedRectangleBorder(
+                                            borderRadius: BorderRadius.circular(
+                                              12,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
                               ],
                             ),
                           ),

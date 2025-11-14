@@ -34,20 +34,22 @@ class _DatosExcelScreenState extends State<DatosExcelScreen>
 
   final Map<String, String> _columnMapping = {
     'Modo contrato': 'modoContrato',
-    'Modalidad estudio': 'modalidadEstudio',
-    'Sede': 'sede',
-    'Unidad académica': 'facultad',
-    'Programa estudio': 'carrera',
-    'Ciclo': 'ciclo',
-    'Grupo': 'grupo',
-    'id_persona': 'idPersona',
     'Código estudiante': 'codigoUniversitario',
     'Estudiante': 'name',
-    'Documento': 'dni',
-    'Correo': 'email',
-    'Usuario': 'username',
-    'Correo Institucional': 'correoInstitucional',
+    'Ciclo': 'ciclo',
     'Celular': 'celular',
+    'Usuario': 'username',
+    'Documento': 'dni',
+    'Unidad académica': 'facultad',
+    'Programa estudio': 'carrera',
+
+    // Opcionales (por si los tienes en otras hojas):
+    'Modalidad estudio': 'modalidadEstudio',
+    'Sede': 'sede',
+    'Grupo': 'grupo',
+    'Correo': 'email',
+    'Correo Institucional': 'correoInstitucional',
+    'id_persona': 'idPersona',
   };
 
   @override
@@ -245,6 +247,7 @@ class _DatosExcelScreenState extends State<DatosExcelScreen>
             _buildFeatureItem('Importación ULTRA RÁPIDA'),
             _buildFeatureItem('Acepta celdas vacías'),
             _buildFeatureItem('Omite duplicados automáticamente'),
+            _buildFeatureItem('Organizado por carrera'),
             const SizedBox(height: 12),
             Container(
               padding: const EdgeInsets.all(12),
@@ -338,38 +341,67 @@ class _DatosExcelScreenState extends State<DatosExcelScreen>
     );
   }
 
+  // ACTUALIZADO: Procesar importación por carrera
   Future<void> _processBatchImport() async {
-    final existingUsers = await _getAllExistingUsers();
-    List<Map<String, dynamic>> validStudents = [];
+    // Agrupar estudiantes por carrera
+    Map<String, List<Map<String, dynamic>>> studentsByCarrera = {};
 
-    for (int i = 0; i < _allData.length; i++) {
-      var studentData = _allData[i];
-      final preparedData = _prepareStudentData(studentData, i);
-      final isDuplicate = _checkDuplicate(preparedData, existingUsers);
-
-      if (isDuplicate) {
-        _errorCount++;
-        _errors.add(
-          'Fila ${i + 2}: ${preparedData['name']} - Ya existe (DNI: ${preparedData['dni']})',
-        );
-      } else {
-        validStudents.add(preparedData);
+    for (var studentData in _allData) {
+      String carrera = _getFieldValue(studentData, 'carrera', 'Sin asignar');
+      if (!studentsByCarrera.containsKey(carrera)) {
+        studentsByCarrera[carrera] = [];
       }
-
-      setState(() {
-        _currentProgress = i + 1;
-      });
+      studentsByCarrera[carrera]!.add(studentData);
     }
 
-    await _batchWriteToFirestore(validStudents);
+    // Procesar cada carrera
+    for (var entry in studentsByCarrera.entries) {
+      String carrera = entry.key;
+      List<Map<String, dynamic>> students = entry.value;
+
+      // Obtener usuarios existentes en esta carrera
+      final existingUsers = await _getExistingUsersInCarrera(carrera);
+      List<Map<String, dynamic>> validStudents = [];
+
+      for (int i = 0; i < students.length; i++) {
+        var studentData = students[i];
+        final preparedData = _prepareStudentData(studentData, _currentProgress);
+        final isDuplicate = _checkDuplicate(preparedData, existingUsers);
+
+        if (isDuplicate) {
+          _errorCount++;
+          _errors.add(
+            'Fila ${_currentProgress + 2}: ${preparedData['name']} - Ya existe en $carrera (DNI: ${preparedData['dni']})',
+          );
+        } else {
+          validStudents.add(preparedData);
+        }
+
+        setState(() {
+          _currentProgress++;
+        });
+      }
+
+      // Escribir estudiantes válidos en esta carrera
+      await _batchWriteToFirestoreByCarrera(carrera, validStudents);
+    }
   }
 
-  Future<Set<Map<String, String>>> _getAllExistingUsers() async {
+  Future<Set<Map<String, String>>> _getExistingUsersInCarrera(
+    String carrera,
+  ) async {
     try {
+      print('🔎 Buscando usuarios existentes en carrera: "$carrera"');
+
       final snapshot = await _firestore
           .collection('users')
-          .where('userType', isEqualTo: 'student')
+          .doc(carrera)
+          .collection('students')
           .get();
+
+      print(
+        '   📊 Encontrados ${snapshot.docs.length} estudiantes en Firestore',
+      );
 
       Set<Map<String, String>> existingData = {};
 
@@ -387,7 +419,7 @@ class _DatosExcelScreenState extends State<DatosExcelScreen>
 
       return existingData;
     } catch (e) {
-      print('Error obteniendo usuarios existentes: $e');
+      print('❌ Error obteniendo usuarios existentes en $carrera: $e');
       return {};
     }
   }
@@ -457,10 +489,24 @@ class _DatosExcelScreenState extends State<DatosExcelScreen>
     };
   }
 
-  Future<void> _batchWriteToFirestore(
+  Future<void> _batchWriteToFirestoreByCarrera(
+    String carrera,
     List<Map<String, dynamic>> students,
   ) async {
     try {
+      // ✅ Primero asegurarnos de que el documento de carrera existe
+      final carreraDocRef = _firestore.collection('users').doc(carrera);
+
+      // Verificar si existe, si no, crearlo
+      final carreraDoc = await carreraDocRef.get();
+      if (!carreraDoc.exists) {
+        await carreraDocRef.set({
+          'name': carrera,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+        print('📁 Documento de carrera creado: $carrera');
+      }
+
       for (int i = 0; i < students.length; i += BATCH_SIZE) {
         WriteBatch batch = _firestore.batch();
 
@@ -469,23 +515,20 @@ class _DatosExcelScreenState extends State<DatosExcelScreen>
             : students.length;
 
         for (int j = i; j < end; j++) {
-          DocumentReference docRef = _firestore.collection('users').doc();
+          // ✅ Ahora usa el nombre de carrera directamente
+          DocumentReference docRef = carreraDocRef.collection('students').doc();
           batch.set(docRef, students[j]);
         }
 
         await batch.commit();
-
         _successCount += (end - i);
-
-        setState(() {
-          _currentProgress = _totalRows;
-        });
+        setState(() {});
       }
 
-      print('✅ Importación completada: $_successCount estudiantes');
+      print('✅ Importados ${students.length} estudiantes en $carrera');
     } catch (e) {
-      print('Error en batch write: $e');
-      _showMessage('Error durante la importación: $e');
+      print('Error en batch write para $carrera: $e');
+      _showMessage('Error durante la importación en $carrera: $e');
     }
   }
 
@@ -1004,6 +1047,11 @@ class _DatosExcelScreenState extends State<DatosExcelScreen>
                     Icons.refresh,
                     'Omite duplicados automáticamente',
                   ),
+                  const SizedBox(height: 8),
+                  _buildFeatureRow(
+                    Icons.folder_special,
+                    'Organizado por carrera',
+                  ),
                   const SizedBox(height: 24),
                   ElevatedButton.icon(
                     onPressed: _pickExcelFile,
@@ -1195,16 +1243,18 @@ class _DatosExcelScreenState extends State<DatosExcelScreen>
                                   Row(
                                     children: [
                                       Icon(
-                                        Icons.badge,
+                                        Icons.school,
                                         size: 14,
                                         color: Colors.grey.shade600,
                                       ),
                                       const SizedBox(width: 4),
-                                      Text(
-                                        'DNI: ${student['dni'] ?? "Sin dato"}',
-                                        style: TextStyle(
-                                          fontSize: 13,
-                                          color: Colors.grey.shade700,
+                                      Expanded(
+                                        child: Text(
+                                          'Carrera: ${student['carrera'] ?? "Sin dato"}',
+                                          style: TextStyle(
+                                            fontSize: 13,
+                                            color: Colors.grey.shade700,
+                                          ),
                                         ),
                                       ),
                                     ],
@@ -1213,13 +1263,13 @@ class _DatosExcelScreenState extends State<DatosExcelScreen>
                                   Row(
                                     children: [
                                       Icon(
-                                        Icons.numbers,
+                                        Icons.badge,
                                         size: 14,
                                         color: Colors.grey.shade600,
                                       ),
                                       const SizedBox(width: 4),
                                       Text(
-                                        'Código: ${student['codigoUniversitario'] ?? "Sin dato"}',
+                                        'DNI: ${student['dni'] ?? "Sin dato"}',
                                         style: TextStyle(
                                           fontSize: 13,
                                           color: Colors.grey.shade700,

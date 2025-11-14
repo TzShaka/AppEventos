@@ -3,6 +3,7 @@ import '/prefs_helper.dart';
 import '/login.dart';
 import 'perfil.dart';
 import 'escanear_qr.dart';
+import 'asistencias.dart';
 
 class EstudianteScreen extends StatefulWidget {
   const EstudianteScreen({super.key});
@@ -192,6 +193,18 @@ class _EstudianteScreenState extends State<EstudianteScreen> {
                           Navigator.of(context).push(
                             MaterialPageRoute(
                               builder: (context) => const EscanearQRScreen(),
+                            ),
+                          );
+                        },
+                      ),
+                      _buildMenuCard(
+                        imagePath: 'assets/icons/mis-asistencias.png',
+                        title: 'Mis Asistencias',
+                        subtitle: 'Ver historial de asistencias',
+                        onTap: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (context) => AsistenciasScreen(),
                             ),
                           );
                         },

@@ -24,6 +24,7 @@ class _EstudiantesRegistradosScreenState
   late AnimationController _filterAnimationController;
 
   final Map<String, List<String>> _facultadesCarreras = {
+    'Universidad Peruana Unión': [], // ✅ Nueva opción sin carreras
     'Facultad de Ciencias Empresariales': [
       'EP Administración',
       'EP Contabilidad',
@@ -59,7 +60,6 @@ class _EstudiantesRegistradosScreenState
       duration: const Duration(milliseconds: 400),
       vsync: this,
     );
-    _loadStudents();
     _filterAnimationController.forward();
   }
 
@@ -71,17 +71,49 @@ class _EstudiantesRegistradosScreenState
     super.dispose();
   }
 
+  // ✅ Verificar si la facultad requiere carrera
+  bool _requiereCarrera(String? facultad) {
+    if (facultad == null) return true;
+    return facultad != 'Universidad Peruana Unión';
+  }
+
   Future<void> _loadStudents() async {
+    // ✅ Para UPeU, no se requiere carrera
+    if (_requiereCarrera(_selectedFacultad) && _selectedCarrera == null) {
+      print('⚠️ No hay carrera seleccionada');
+      return;
+    }
+
     setState(() {
       _isLoading = true;
     });
 
     try {
-      final students = await PrefsHelper.getStudents();
+      // ✅ Si es UPeU, usar la facultad como carrera
+      final carreraPath = _requiereCarrera(_selectedFacultad)
+          ? _selectedCarrera!
+          : _selectedFacultad!;
+
+      print('🔍 Cargando estudiantes de: $carreraPath');
+
+      final students = await PrefsHelper.getStudentsByCarrera(carreraPath);
+
+      print('📚 Estudiantes cargados de $carreraPath: ${students.length}');
+
+      if (students.isNotEmpty) {
+        print('📝 Primer estudiante: ${students.first['name']}');
+      }
+
       setState(() {
         _allStudents = students;
+        _filteredStudents = students;
       });
+
+      if (_searchController.text.isNotEmpty) {
+        _applyFilters();
+      }
     } catch (e) {
+      print('❌ Error cargando estudiantes: $e');
       _showMessage('Error cargando estudiantes: $e');
     }
 
@@ -91,7 +123,10 @@ class _EstudiantesRegistradosScreenState
   }
 
   void _applyFilters() {
-    if (_selectedFacultad == null || _selectedCarrera == null) {
+    // ✅ Validar según el tipo de facultad
+    if (_selectedFacultad == null ||
+        (_requiereCarrera(_selectedFacultad) && _selectedCarrera == null) ||
+        _allStudents.isEmpty) {
       setState(() {
         _filteredStudents = [];
       });
@@ -100,9 +135,6 @@ class _EstudiantesRegistradosScreenState
 
     final searchTerm = _searchController.text.toLowerCase().trim();
     List<Map<String, dynamic>> result = List.from(_allStudents);
-
-    result = result.where((s) => s['facultad'] == _selectedFacultad).toList();
-    result = result.where((s) => s['carrera'] == _selectedCarrera).toList();
 
     if (searchTerm.isNotEmpty) {
       result = result.where((student) {
@@ -115,6 +147,8 @@ class _EstudiantesRegistradosScreenState
             codigo.contains(searchTerm) ||
             dni.contains(searchTerm);
       }).toList();
+
+      print('🔍 Búsqueda "$searchTerm": ${result.length} resultados');
     }
 
     setState(() {
@@ -128,17 +162,27 @@ class _EstudiantesRegistradosScreenState
       _selectedCarrera = null;
       _searchController.clear();
       _expandedStudents.clear();
+      _allStudents = [];
       _filteredStudents = [];
     });
+
+    // ✅ Si es UPeU, cargar estudiantes automáticamente
+    if (facultad == 'Universidad Peruana Unión') {
+      _loadStudents();
+    }
   }
 
   void _onCarreraChanged(String? carrera) {
+    print('📌 Carrera seleccionada: $carrera');
     setState(() {
       _selectedCarrera = carrera;
       _searchController.clear();
       _expandedStudents.clear();
+      _allStudents = [];
+      _filteredStudents = [];
     });
-    _applyFilters();
+
+    _loadStudents();
   }
 
   void _clearFilters() {
@@ -147,15 +191,23 @@ class _EstudiantesRegistradosScreenState
       _selectedCarrera = null;
       _searchController.clear();
       _expandedStudents.clear();
+      _allStudents = [];
       _filteredStudents = [];
     });
   }
 
   Future<void> _deleteAllStudents() async {
-    if (_allStudents.isEmpty) {
+    // ✅ Validar según el tipo de facultad
+    if (_selectedFacultad == null ||
+        (_requiereCarrera(_selectedFacultad) && _selectedCarrera == null) ||
+        _filteredStudents.isEmpty) {
       _showMessage('No hay estudiantes para eliminar');
       return;
     }
+
+    final displayName = _requiereCarrera(_selectedFacultad)
+        ? _selectedCarrera!
+        : _selectedFacultad!;
 
     final confirmed = await showDialog<bool>(
       context: context,
@@ -173,9 +225,9 @@ class _EstudiantesRegistradosScreenState
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'Estás a punto de eliminar TODOS los estudiantes registrados.',
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+            Text(
+              'Estás a punto de eliminar TODOS los estudiantes de $displayName.',
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
             ),
             const SizedBox(height: 16),
             Container(
@@ -194,7 +246,7 @@ class _EstudiantesRegistradosScreenState
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          'Total a eliminar: ${_allStudents.length} estudiantes',
+                          'Total a eliminar: ${_filteredStudents.length} estudiantes',
                           style: TextStyle(
                             fontWeight: FontWeight.bold,
                             color: Colors.red.shade700,
@@ -206,7 +258,7 @@ class _EstudiantesRegistradosScreenState
                   const SizedBox(height: 8),
                   Text(
                     '• Esta acción NO se puede deshacer\n'
-                    '• Se eliminarán todos los datos\n'
+                    '• Se eliminarán de $displayName\n'
                     '• Los estudiantes no podrán iniciar sesión',
                     style: TextStyle(fontSize: 13, color: Colors.red.shade900),
                   ),
@@ -257,12 +309,27 @@ class _EstudiantesRegistradosScreenState
     );
 
     try {
-      final results = await PrefsHelper.deleteAllStudents();
+      int successCount = 0;
+      int errorCount = 0;
+
+      // ✅ Usar el path correcto según el tipo de facultad
+      final carreraPath = _requiereCarrera(_selectedFacultad)
+          ? _selectedCarrera!
+          : _selectedFacultad!;
+
+      for (var student in _filteredStudents) {
+        try {
+          await PrefsHelper.deleteStudent(carreraPath, student['id']);
+          successCount++;
+        } catch (e) {
+          errorCount++;
+          print('Error eliminando estudiante: $e');
+        }
+      }
+
       Navigator.of(context).pop();
-      await _showDeleteResultsDialog(
-        results['success'] ?? 0,
-        results['errors'] ?? 0,
-      );
+      await _showDeleteResultsDialog(successCount, errorCount);
+
       await _loadStudents();
     } catch (e) {
       Navigator.of(context).pop();
@@ -402,6 +469,9 @@ class _EstudiantesRegistradosScreenState
                       );
                       final carreras = _facultadesCarreras[facultad]!;
                       final isSelected = _selectedFacultad == facultad;
+                      // ✅ Verificar si es UPeU
+                      final isUniversidad =
+                          facultad == 'Universidad Peruana Unión';
 
                       return AnimatedContainer(
                         duration: const Duration(milliseconds: 300),
@@ -432,7 +502,9 @@ class _EstudiantesRegistradosScreenState
                               borderRadius: BorderRadius.circular(10),
                             ),
                             child: Icon(
-                              Icons.school,
+                              isUniversidad
+                                  ? Icons.account_balance
+                                  : Icons.school,
                               color: isSelected ? Colors.white : Colors.grey,
                             ),
                           ),
@@ -446,7 +518,9 @@ class _EstudiantesRegistradosScreenState
                             ),
                           ),
                           subtitle: Text(
-                            '${carreras.length} carreras disponibles',
+                            isUniversidad
+                                ? 'Toda la universidad'
+                                : '${carreras.length} carreras disponibles',
                             style: TextStyle(
                               fontSize: 12,
                               color: isSelected
@@ -484,6 +558,12 @@ class _EstudiantesRegistradosScreenState
   void _showCarreraSelector() {
     if (_selectedFacultad == null) {
       _showMessage('⚠️ Debes seleccionar una Facultad primero');
+      return;
+    }
+
+    // ✅ No mostrar selector si es UPeU
+    if (!_requiereCarrera(_selectedFacultad)) {
+      _showMessage('ℹ️ Esta opción no requiere seleccionar carrera');
       return;
     }
 
@@ -632,7 +712,11 @@ class _EstudiantesRegistradosScreenState
     );
   }
 
-  Future<void> _deleteStudent(String studentId, String studentName) async {
+  Future<void> _deleteStudent(
+    String carreraPath,
+    String studentId,
+    String studentName,
+  ) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -663,11 +747,13 @@ class _EstudiantesRegistradosScreenState
       setState(() => _isLoading = true);
 
       try {
-        final success = await PrefsHelper.deleteStudent(studentId);
+        final success = await PrefsHelper.deleteStudent(carreraPath, studentId);
         if (success) {
           _showMessage('Estudiante eliminado exitosamente');
           await _loadStudents();
-          if (_selectedFacultad != null && _selectedCarrera != null) {
+          if (_selectedFacultad != null &&
+              (_selectedCarrera != null ||
+                  !_requiereCarrera(_selectedFacultad))) {
             _applyFilters();
           }
         } else {
@@ -698,6 +784,11 @@ class _EstudiantesRegistradosScreenState
   Widget _buildEstudianteCard(Map<String, dynamic> student, int index) {
     final studentId = student['id'];
     final isExpanded = _expandedStudents.contains(studentId);
+
+    // ✅ Determinar el path correcto para eliminar
+    final carreraPath = _requiereCarrera(_selectedFacultad)
+        ? (student['carreraPath'] ?? _selectedCarrera ?? '')
+        : _selectedFacultad ?? '';
 
     return TweenAnimationBuilder<double>(
       duration: Duration(milliseconds: 300 + (index * 50)),
@@ -890,6 +981,7 @@ class _EstudiantesRegistradosScreenState
                       onSelected: (value) {
                         if (value == 'delete') {
                           _deleteStudent(
+                            carreraPath,
                             studentId,
                             student['name'] ?? 'Estudiante',
                           );
@@ -1054,7 +1146,8 @@ class _EstudiantesRegistradosScreenState
           ],
         ),
       );
-    } else if (_selectedCarrera == null) {
+    } else if (_requiereCarrera(_selectedFacultad) &&
+        _selectedCarrera == null) {
       return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -1140,9 +1233,10 @@ class _EstudiantesRegistradosScreenState
               ),
             ),
             const SizedBox(height: 8),
-            const Text(
-              'No hay estudiantes registrados en esta carrera',
-              style: TextStyle(fontSize: 14, color: Color(0xFF64748B)),
+            Text(
+              'No hay estudiantes registrados en ${_requiereCarrera(_selectedFacultad) ? _selectedCarrera : _selectedFacultad}',
+              style: const TextStyle(fontSize: 14, color: Color(0xFF64748B)),
+              textAlign: TextAlign.center,
             ),
           ],
         ),
@@ -1157,11 +1251,10 @@ class _EstudiantesRegistradosScreenState
       body: SafeArea(
         child: Column(
           children: [
-            // Header con gradiente
             Container(
               padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
                   colors: [Color(0xFF1E3A5F), Color(0xFF2E4A6F)],
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
@@ -1212,7 +1305,6 @@ class _EstudiantesRegistradosScreenState
                 ],
               ),
             ),
-            // Content Area
             Expanded(
               child: Container(
                 decoration: const BoxDecoration(
@@ -1230,7 +1322,6 @@ class _EstudiantesRegistradosScreenState
                       )
                     : Column(
                         children: [
-                          // Filtros Card
                           SlideTransition(
                             position:
                                 Tween<Offset>(
@@ -1405,104 +1496,118 @@ class _EstudiantesRegistradosScreenState
                                             ),
                                           ),
                                         ),
-                                        const SizedBox(width: 12),
-                                        Expanded(
-                                          child: Material(
-                                            color: Colors.transparent,
-                                            child: InkWell(
-                                              onTap: _showCarreraSelector,
-                                              borderRadius:
-                                                  BorderRadius.circular(12),
-                                              child: Container(
-                                                padding: const EdgeInsets.all(
-                                                  16,
-                                                ),
-                                                decoration: BoxDecoration(
-                                                  border: Border.all(
-                                                    color:
-                                                        _selectedCarrera != null
-                                                        ? const Color(
-                                                            0xFF1E3A5F,
-                                                          )
-                                                        : Colors.grey.shade300,
-                                                    width:
-                                                        _selectedCarrera != null
-                                                        ? 2
-                                                        : 1,
+                                        // ✅ Solo mostrar selector de carrera si se requiere
+                                        if (_requiereCarrera(
+                                          _selectedFacultad,
+                                        )) ...[
+                                          const SizedBox(width: 12),
+                                          Expanded(
+                                            child: Material(
+                                              color: Colors.transparent,
+                                              child: InkWell(
+                                                onTap: _showCarreraSelector,
+                                                borderRadius:
+                                                    BorderRadius.circular(12),
+                                                child: Container(
+                                                  padding: const EdgeInsets.all(
+                                                    16,
                                                   ),
-                                                  borderRadius:
-                                                      BorderRadius.circular(12),
-                                                  color:
-                                                      _selectedCarrera != null
-                                                      ? const Color(
-                                                          0xFF1E3A5F,
-                                                        ).withOpacity(0.05)
-                                                      : Colors.white,
-                                                ),
-                                                child: Row(
-                                                  children: [
-                                                    Icon(
-                                                      Icons.book,
+                                                  decoration: BoxDecoration(
+                                                    border: Border.all(
                                                       color:
                                                           _selectedCarrera !=
                                                               null
                                                           ? const Color(
                                                               0xFF1E3A5F,
                                                             )
-                                                          : Colors.grey,
+                                                          : Colors
+                                                                .grey
+                                                                .shade300,
+                                                      width:
+                                                          _selectedCarrera !=
+                                                              null
+                                                          ? 2
+                                                          : 1,
                                                     ),
-                                                    const SizedBox(width: 12),
-                                                    Expanded(
-                                                      child: Column(
-                                                        crossAxisAlignment:
-                                                            CrossAxisAlignment
-                                                                .start,
-                                                        children: [
-                                                          const Text(
-                                                            'Carrera',
-                                                            style: TextStyle(
-                                                              fontSize: 11,
-                                                              color: Color(
-                                                                0xFF64748B,
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                          12,
+                                                        ),
+                                                    color:
+                                                        _selectedCarrera != null
+                                                        ? const Color(
+                                                            0xFF1E3A5F,
+                                                          ).withOpacity(0.05)
+                                                        : Colors.white,
+                                                  ),
+                                                  child: Row(
+                                                    children: [
+                                                      Icon(
+                                                        Icons.book,
+                                                        color:
+                                                            _selectedCarrera !=
+                                                                null
+                                                            ? const Color(
+                                                                0xFF1E3A5F,
+                                                              )
+                                                            : Colors.grey,
+                                                      ),
+                                                      const SizedBox(width: 12),
+                                                      Expanded(
+                                                        child: Column(
+                                                          crossAxisAlignment:
+                                                              CrossAxisAlignment
+                                                                  .start,
+                                                          children: [
+                                                            const Text(
+                                                              'Carrera',
+                                                              style: TextStyle(
+                                                                fontSize: 11,
+                                                                color: Color(
+                                                                  0xFF64748B,
+                                                                ),
                                                               ),
                                                             ),
-                                                          ),
-                                                          const SizedBox(
-                                                            height: 2,
-                                                          ),
-                                                          Text(
-                                                            _selectedCarrera ??
-                                                                'Seleccionar',
-                                                            style: TextStyle(
-                                                              fontSize: 13,
-                                                              fontWeight:
-                                                                  FontWeight
-                                                                      .w600,
-                                                              color:
-                                                                  _selectedCarrera !=
-                                                                      null
-                                                                  ? const Color(
-                                                                      0xFF1E3A5F,
-                                                                    )
-                                                                  : Colors.grey,
+                                                            const SizedBox(
+                                                              height: 2,
                                                             ),
-                                                            overflow:
-                                                                TextOverflow
-                                                                    .ellipsis,
-                                                          ),
-                                                        ],
+                                                            Text(
+                                                              _selectedCarrera ??
+                                                                  'Seleccionar',
+                                                              style: TextStyle(
+                                                                fontSize: 13,
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .w600,
+                                                                color:
+                                                                    _selectedCarrera !=
+                                                                        null
+                                                                    ? const Color(
+                                                                        0xFF1E3A5F,
+                                                                      )
+                                                                    : Colors
+                                                                          .grey,
+                                                              ),
+                                                              overflow:
+                                                                  TextOverflow
+                                                                      .ellipsis,
+                                                            ),
+                                                          ],
+                                                        ),
                                                       ),
-                                                    ),
-                                                  ],
+                                                    ],
+                                                  ),
                                                 ),
                                               ),
                                             ),
                                           ),
-                                        ),
+                                        ],
                                       ],
                                     ),
+                                    // ✅ Mostrar búsqueda si facultad está seleccionada y (no requiere carrera O carrera está seleccionada)
                                     if (_selectedFacultad != null &&
-                                        _selectedCarrera != null) ...[
+                                        (!_requiereCarrera(_selectedFacultad) ||
+                                            _selectedCarrera != null)) ...[
                                       const SizedBox(height: 16),
                                       TextField(
                                         controller: _searchController,
@@ -1609,7 +1714,6 @@ class _EstudiantesRegistradosScreenState
                               ),
                             ),
                           ),
-                          // Lista de estudiantes
                           Expanded(
                             child: _filteredStudents.isEmpty
                                 ? _buildEmptyState()

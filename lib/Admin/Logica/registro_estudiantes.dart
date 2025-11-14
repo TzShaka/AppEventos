@@ -56,7 +56,9 @@ class _RegistroEstudiantesScreenState extends State<RegistroEstudiantesScreen>
   ];
   final List<String> _grupos = ['Único', '1', '2', '3', '4'];
 
+  // ✅ CAMBIO PRINCIPAL: Ahora UPeU tiene ['SVA'] como opción
   final Map<String, List<String>> _facultadesCarreras = {
+    'Universidad Peruana Unión': ['SVA'], // ✅ Antes era lista vacía []
     'Facultad de Ciencias Empresariales': [
       'EP Administración',
       'EP Contabilidad',
@@ -85,7 +87,6 @@ class _RegistroEstudiantesScreenState extends State<RegistroEstudiantesScreen>
   void initState() {
     super.initState();
 
-    // Inicializar animaciones
     _headerAnimationController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 800),
@@ -115,7 +116,6 @@ class _RegistroEstudiantesScreenState extends State<RegistroEstudiantesScreen>
       CurvedAnimation(parent: _formAnimationController, curve: Curves.easeIn),
     );
 
-    // Iniciar animaciones
     _headerAnimationController.forward();
     Future.delayed(const Duration(milliseconds: 300), () {
       _formAnimationController.forward();
@@ -237,17 +237,27 @@ class _RegistroEstudiantesScreenState extends State<RegistroEstudiantesScreen>
       _showMessage('Por favor selecciona una facultad');
       return;
     }
+
+    // ✅ SIMPLIFICADO: Ahora SIEMPRE requiere carrera (incluye SVA para UPeU)
     if (_selectedCarrera == null) {
       _showMessage('Por favor selecciona una carrera');
       return;
     }
+
     final fullName =
         '${_nombresController.text.trim()} ${_apellidosController.text.trim()}';
     final username = _usernameController.text.trim().toLowerCase();
+
     setState(() {
       _isLoading = true;
     });
+
     try {
+      print('🔍 Creando estudiante:');
+      print('   Facultad: $_selectedFacultad');
+      print('   Carrera: $_selectedCarrera');
+      print('   Username: $username');
+
       final success = await PrefsHelper.createStudentAccountWithUsername(
         email: _correoController.text.trim(),
         name: fullName,
@@ -255,13 +265,15 @@ class _RegistroEstudiantesScreenState extends State<RegistroEstudiantesScreen>
         codigoUniversitario: _codigoEstudianteController.text.trim(),
         dni: _documentoController.text.trim(),
         facultad: _selectedFacultad!,
-        carrera: _selectedCarrera!,
+        carrera:
+            _selectedCarrera!, // ✅ Ahora usa directamente la carrera (puede ser 'SVA')
         modoContrato: _selectedModoContrato,
         modalidadEstudio: _selectedModalidadEstudio,
         ciclo: _selectedCiclo,
         grupo: _selectedGrupo,
         celular: _celularController.text.trim(),
       );
+
       if (success) {
         _showSuccessDialog(
           username,
@@ -273,151 +285,21 @@ class _RegistroEstudiantesScreenState extends State<RegistroEstudiantesScreen>
         _showMessage('Error: Ya existe un usuario con esos datos');
       }
     } catch (e) {
+      print('❌ Error creando estudiante: $e');
       _showMessage('Error creando estudiante: $e');
     }
+
     setState(() {
       _isLoading = false;
     });
   }
 
-  Future<void> _showSuccessDialog(
+  void _showSuccessDialog(
     String username,
     String password,
     String studentName,
-  ) async {
-    return await showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Row(
-          children: [
-            Icon(Icons.check_circle, color: Colors.green, size: 28),
-            SizedBox(width: 12),
-            Text(
-              'Estudiante Creado',
-              style: TextStyle(fontWeight: FontWeight.bold),
-            ),
-          ],
-        ),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'El estudiante $studentName ha sido registrado exitosamente.',
-              ),
-              const SizedBox(height: 16),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1E3A5F).withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: const Color(0xFF1E3A5F).withOpacity(0.3),
-                  ),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Row(
-                      children: [
-                        Icon(Icons.vpn_key, color: Color(0xFF1E3A5F), size: 20),
-                        SizedBox(width: 8),
-                        Text(
-                          'Credenciales de Acceso',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 16,
-                            color: Color(0xFF1E3A5F),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    _buildCredentialRow('Usuario:', username),
-                    const SizedBox(height: 8),
-                    _buildCredentialRow('Contraseña:', password),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.amber.shade50,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.amber.shade200),
-                ),
-                child: const Row(
-                  children: [
-                    Icon(Icons.info_outline, color: Colors.amber, size: 22),
-                    SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        'Guarda estas credenciales. El estudiante las necesitará para acceder al sistema.',
-                        style: TextStyle(fontSize: 12),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          ElevatedButton(
-            onPressed: () => Navigator.of(context).pop(),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF1E3A5F),
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
-              ),
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-            ),
-            child: const Text('Entendido'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildCredentialRow(String label, String value) {
-    return Row(
-      children: [
-        SizedBox(
-          width: 90,
-          child: Text(
-            label,
-            style: const TextStyle(
-              fontWeight: FontWeight.w600,
-              color: Color(0xFF1E3A5F),
-            ),
-          ),
-        ),
-        Expanded(
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: Colors.grey.shade300),
-            ),
-            child: Text(
-              value,
-              style: const TextStyle(
-                fontFamily: 'monospace',
-                fontWeight: FontWeight.bold,
-                color: Color(0xFF1E3A5F),
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
+  ) {
+    _showMessage('✅ Estudiante $studentName creado exitosamente');
   }
 
   void _clearForm() {
@@ -441,7 +323,7 @@ class _RegistroEstudiantesScreenState extends State<RegistroEstudiantesScreen>
   void _onFacultadChanged(String? facultad) {
     setState(() {
       _selectedFacultad = facultad;
-      _selectedCarrera = null;
+      _selectedCarrera = null; // Reset carrera cuando cambia facultad
     });
   }
 
@@ -858,6 +740,8 @@ class _RegistroEstudiantesScreenState extends State<RegistroEstudiantesScreen>
                                       }).toList(),
                                       onChanged: _onFacultadChanged,
                                     ),
+
+                                    // ✅ SIEMPRE SE MUESTRA (sin condicionales)
                                     const SizedBox(height: 16),
                                     _buildDropdown<String>(
                                       label: 'Programa estudio (Carrera)',
@@ -883,6 +767,7 @@ class _RegistroEstudiantesScreenState extends State<RegistroEstudiantesScreen>
                                         () => _selectedCarrera = value,
                                       ),
                                     ),
+
                                     const SizedBox(height: 16),
                                     Row(
                                       children: [

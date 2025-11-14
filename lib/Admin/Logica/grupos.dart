@@ -56,7 +56,7 @@ class GruposService {
     }
   }
 
-  // Procesar archivo Excel desde bytes
+  // Procesar archivo Excel desde bytes con DETECCIÓN AUTOMÁTICA
   Future<List<Map<String, dynamic>>> procesarArchivoBytesExcel(
     Uint8List bytes,
   ) async {
@@ -76,21 +76,57 @@ class GruposService {
 
         print('Headers encontrados: $headers');
 
+        // 🔍 DETECCIÓN AUTOMÁTICA DEL FORMATO
+        final tipoFormato = detectarFormatoExcel(headers);
+        print('Formato detectado: $tipoFormato');
+
+        // 📌 Variable para recordar el último SUBEVENTOS/EVENTO (para merged cells)
+        String? ultimoSubevento;
+        String? ultimoEvento;
+
         for (int i = 1; i < sheet.maxRows; i++) {
           final row = sheet.rows[i];
           Map<String, dynamic> proyecto = {};
 
-          for (int j = 0; j < headers.length && j < row.length; j++) {
-            final cellValue = row[j]?.value?.toString().trim();
-            if (cellValue != null && cellValue.isNotEmpty) {
-              String normalizedKey = normalizarClave(headers[j]);
-              proyecto[normalizedKey] = cellValue;
+          if (tipoFormato == 'PROYECTOS') {
+            // Formato original: CÓDIGO, TÍTULO, INTEGRANTES, CLASIFICACIÓN
+            proyecto = procesarFormatoProyectos(headers, row);
+            // Validar que tenga los datos mínimos requeridos
+            if (proyecto.containsKey('Código') &&
+                proyecto.containsKey('Clasificación')) {
+              proyectos.add(proyecto);
             }
-          }
+          } else if (tipoFormato == 'EVENTOS') {
+            // Formato nuevo: EVENTO, SUBEVENTOS, TÍTULO DE PROGRAMA, ENCARGADO, LUGAR
+            proyecto = procesarFormatoEventos(
+              headers,
+              row,
+              i,
+              ultimoSubevento,
+              ultimoEvento,
+            );
 
-          if (proyecto.containsKey('Código') &&
-              proyecto.containsKey('Clasificación')) {
-            proyectos.add(proyecto);
+            // Actualizar los últimos valores conocidos
+            if (proyecto.containsKey('Subevento') &&
+                proyecto['Subevento'] != null) {
+              ultimoSubevento = proyecto['Subevento'];
+            }
+            if (proyecto.containsKey('EventoPrincipal') &&
+                proyecto['EventoPrincipal'] != null) {
+              ultimoEvento = proyecto['EventoPrincipal'];
+            }
+
+            // Para eventos, validar que tenga al menos título y clasificación
+            if (proyecto.isNotEmpty &&
+                proyecto.containsKey('Título') &&
+                proyecto['Título'].toString().isNotEmpty &&
+                proyecto.containsKey('Clasificación') &&
+                proyecto['Clasificación'].toString().isNotEmpty) {
+              proyectos.add(proyecto);
+              print(
+                'Proyecto agregado: ${proyecto['Título']} - ${proyecto['Clasificación']}',
+              );
+            }
           }
         }
       }
@@ -102,18 +138,165 @@ class GruposService {
     }
   }
 
-  // Normalizar las claves de las columnas del Excel
-  String normalizarClave(String clave) {
+  // 🔍 Detectar el formato del Excel basado en los headers
+  String detectarFormatoExcel(List<String> headers) {
+    final headersUpper = headers.map((h) => h.toUpperCase().trim()).toList();
+
+    // Verificar si es formato de EVENTOS
+    bool tieneEvento = headersUpper.any((h) => h.contains('EVENTO'));
+    bool tieneSubeventos = headersUpper.any((h) => h.contains('SUBEVENTOS'));
+    bool tieneEncargado = headersUpper.any((h) => h.contains('ENCARGADO'));
+    bool tieneLugar = headersUpper.any((h) => h.contains('LUGAR'));
+
+    if (tieneEvento || tieneSubeventos || tieneEncargado || tieneLugar) {
+      return 'EVENTOS';
+    }
+
+    // Verificar si es formato de PROYECTOS
+    bool tieneCodigo = headersUpper.any((h) => h.contains('CÓDIGO'));
+    bool tieneClasificacion = headersUpper.any(
+      (h) => h.contains('CLASIFICACIÓN'),
+    );
+
+    if (tieneCodigo || tieneClasificacion) {
+      return 'PROYECTOS';
+    }
+
+    // Por defecto, asumir formato de proyectos
+    return 'PROYECTOS';
+  }
+
+  // 📋 Procesar formato PROYECTOS (original)
+  Map<String, dynamic> procesarFormatoProyectos(
+    List<String> headers,
+    List<Data?> row,
+  ) {
+    Map<String, dynamic> proyecto = {};
+
+    for (int j = 0; j < headers.length && j < row.length; j++) {
+      final cellValue = row[j]?.value?.toString().trim();
+      if (cellValue != null && cellValue.isNotEmpty) {
+        String normalizedKey = normalizarClaveProyectos(headers[j]);
+        proyecto[normalizedKey] = cellValue;
+      }
+    }
+
+    return proyecto;
+  }
+
+  // 🎭 Procesar formato EVENTOS (nuevo)
+  Map<String, dynamic> procesarFormatoEventos(
+    List<String> headers,
+    List<Data?> row,
+    int rowIndex,
+    String? ultimoSubevento,
+    String? ultimoEvento,
+  ) {
+    Map<String, dynamic> proyecto = {};
+
+    // Crear un mapa temporal con los datos
+    Map<String, String> datosRaw = {};
+    for (int j = 0; j < headers.length && j < row.length; j++) {
+      final cellValue = row[j]?.value?.toString().trim();
+      if (cellValue != null && cellValue.isNotEmpty) {
+        String headerKey = headers[j].toUpperCase().trim();
+        // Normalizar variaciones del nombre de columna
+        if (headerKey.contains('TÍTULO') && headerKey.contains('PROGRAMA')) {
+          headerKey = 'TÍTULO DE PROGRAMA / PONENCIA';
+        }
+        datosRaw[headerKey] = cellValue;
+      }
+    }
+
+    // TÍTULO: Usamos TÍTULO DE PROGRAMA/PONENCIA (este será nuestro identificador único)
+    String titulo = datosRaw['TÍTULO DE PROGRAMA / PONENCIA'] ?? '';
+    if (titulo.isEmpty) {
+      return {}; // Si no hay título, no procesamos esta fila
+    }
+    proyecto['Título'] = titulo;
+
+    // CÓDIGO: Generamos uno corto y limpio basado en el índice de la fila
+    proyecto['Código'] = 'PON-${rowIndex.toString().padLeft(3, '0')}';
+
+    // INTEGRANTES: Usamos ENCARGADO
+    if (datosRaw.containsKey('ENCARGADO')) {
+      proyecto['Integrantes'] = datosRaw['ENCARGADO'];
+    }
+
+    // 🔑 CLASIFICACIÓN: Usamos SUBEVENTOS con manejo de merged cells
+    String? clasificacion;
+
+    // Intentar obtener de la celda actual primero
+    if (datosRaw.containsKey('SUBEVENTOS') &&
+        datosRaw['SUBEVENTOS']!.isNotEmpty) {
+      clasificacion = datosRaw['SUBEVENTOS'];
+    }
+    // Si la celda está vacía (merged), usar el último valor conocido
+    else if (ultimoSubevento != null && ultimoSubevento.isNotEmpty) {
+      clasificacion = ultimoSubevento;
+      print(
+        'Usando último subevento conocido: $ultimoSubevento para fila $rowIndex',
+      );
+    }
+    // Último recurso: usar EVENTO
+    else if (datosRaw.containsKey('EVENTO') && datosRaw['EVENTO']!.isNotEmpty) {
+      clasificacion = datosRaw['EVENTO'];
+    }
+    // O el último evento conocido
+    else if (ultimoEvento != null && ultimoEvento.isNotEmpty) {
+      clasificacion = ultimoEvento;
+    }
+
+    if (clasificacion != null && clasificacion.isNotEmpty) {
+      proyecto['Clasificación'] = clasificacion;
+    } else {
+      print('⚠️ Fila $rowIndex sin clasificación: ${datosRaw}');
+      return {}; // Si no hay clasificación, no procesamos esta fila
+    }
+
+    // SALA: Usamos LUGAR (también puede estar merged)
+    if (datosRaw.containsKey('LUGAR') && datosRaw['LUGAR']!.isNotEmpty) {
+      proyecto['Sala'] = datosRaw['LUGAR'];
+    }
+
+    // Agregar campos adicionales para referencia
+    proyecto['TipoImportacion'] = 'EVENTOS';
+
+    // Guardar EVENTO actual o el último conocido
+    if (datosRaw.containsKey('EVENTO') && datosRaw['EVENTO']!.isNotEmpty) {
+      proyecto['EventoPrincipal'] = datosRaw['EVENTO'];
+    } else if (ultimoEvento != null) {
+      proyecto['EventoPrincipal'] = ultimoEvento;
+    }
+
+    // Guardar SUBEVENTOS actual o el último conocido
+    if (datosRaw.containsKey('SUBEVENTOS') &&
+        datosRaw['SUBEVENTOS']!.isNotEmpty) {
+      proyecto['Subevento'] = datosRaw['SUBEVENTOS'];
+    } else if (ultimoSubevento != null) {
+      proyecto['Subevento'] = ultimoSubevento;
+    }
+
+    return proyecto;
+  }
+
+  // Normalizar las claves de las columnas del Excel (formato PROYECTOS)
+  String normalizarClaveProyectos(String clave) {
     final claveNormalizada = clave.toUpperCase().trim();
 
     switch (claveNormalizada) {
       case 'CÓDIGO':
+      case 'CODIGO':
         return 'Código';
       case 'TÍTULO DE INVESTIGACIÓN/PROYECTO':
+      case 'TITULO DE INVESTIGACIÓN/PROYECTO':
+      case 'TÍTULO':
+      case 'TITULO':
         return 'Título';
       case 'INTEGRANTES':
         return 'Integrantes';
       case 'CLASIFICACIÓN':
+      case 'CLASIFICACION':
         return 'Clasificación';
       case 'SALA':
         return 'Sala';

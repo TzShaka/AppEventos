@@ -108,22 +108,61 @@ class _AsistenciasEstudiantesScreenState
     });
 
     try {
-      final estudiantesSnapshot = await _firestore
-          .collection('users')
-          .where('userType', isEqualTo: PrefsHelper.userTypeStudent)
-          .get();
+      print('🔍 Cargando filtros desde nueva estructura...');
 
       Set<String> facultadesSet = {};
       Set<String> carrerasSet = {};
 
-      for (var doc in estudiantesSnapshot.docs) {
-        final data = doc.data();
-        if (data['facultad'] != null &&
-            data['facultad'].toString().isNotEmpty) {
-          facultadesSet.add(data['facultad']);
+      // Obtener todas las carreras (documentos en 'users')
+      final carrerasSnapshot = await _firestore.collection('users').get();
+
+      print('📂 Total documentos en users: ${carrerasSnapshot.docs.length}');
+
+      for (var carreraDoc in carrerasSnapshot.docs) {
+        final carreraName = carreraDoc.id;
+
+        // Saltar documentos que no son carreras
+        if (carreraName == 'admin' ||
+            carreraName == 'asistente' ||
+            carreraName == 'jurado') {
+          continue;
         }
-        if (data['carrera'] != null && data['carrera'].toString().isNotEmpty) {
-          carrerasSet.add(data['carrera']);
+
+        print('🔍 Procesando carrera: $carreraName');
+
+        try {
+          // Obtener estudiantes de esta carrera
+          final studentsSnapshot = await _firestore
+              .collection('users')
+              .doc(carreraName)
+              .collection('students')
+              .get();
+
+          print(
+            '   📊 Estudiantes encontrados: ${studentsSnapshot.docs.length}',
+          );
+
+          for (var doc in studentsSnapshot.docs) {
+            final data = doc.data();
+
+            // ✅ Agregar facultad (normalizada)
+            if (data['facultad'] != null &&
+                data['facultad'].toString().isNotEmpty) {
+              final facultad = data['facultad'].toString().trim();
+              facultadesSet.add(facultad);
+              print('   ✅ Facultad: $facultad');
+            }
+
+            // ✅ Agregar carrera
+            if (data['carrera'] != null &&
+                data['carrera'].toString().isNotEmpty) {
+              final carrera = data['carrera'].toString().trim();
+              carrerasSet.add(carrera);
+              print('   ✅ Carrera: $carrera');
+            }
+          }
+        } catch (e) {
+          print('   ⚠️ Error procesando $carreraName: $e');
         }
       }
 
@@ -132,12 +171,16 @@ class _AsistenciasEstudiantesScreenState
         _carreras = carrerasSet.toList()..sort();
       });
 
+      print('✅ Filtros cargados:');
+      print('   Facultades: ${_facultades.join(", ")}');
+      print('   Carreras: ${_carreras.join(", ")}');
+
       _showSnackBar(
         'Filtros cargados: ${_facultades.length} facultades, ${_carreras.length} carreras',
       );
     } catch (e) {
       _showSnackBar('Error cargando filtros: $e', isError: true);
-      print('Error detallado: $e');
+      print('❌ Error detallado: $e');
     } finally {
       setState(() {
         _isLoadingFiltros = false;
@@ -172,17 +215,62 @@ class _AsistenciasEstudiantesScreenState
     }
 
     try {
-      final estudiantesSnapshot = await _firestore
-          .collection('users')
-          .where('userType', isEqualTo: PrefsHelper.userTypeStudent)
-          .where('facultad', isEqualTo: facultad)
-          .get();
+      print('🔍 Buscando carreras para facultad: $facultad');
 
       Set<String> carrerasSet = {};
-      for (var doc in estudiantesSnapshot.docs) {
-        final data = doc.data();
-        if (data['carrera'] != null && data['carrera'].toString().isNotEmpty) {
-          carrerasSet.add(data['carrera']);
+
+      // Obtener todas las carreras (documentos en 'users')
+      final carrerasSnapshot = await _firestore.collection('users').get();
+
+      for (var carreraDoc in carrerasSnapshot.docs) {
+        final carreraName = carreraDoc.id;
+
+        // Saltar documentos que no son carreras
+        if (carreraName == 'admin' ||
+            carreraName == 'asistente' ||
+            carreraName == 'jurado') {
+          continue;
+        }
+
+        try {
+          // Obtener estudiantes de esta carrera que pertenezcan a la facultad
+          final studentsSnapshot = await _firestore
+              .collection('users')
+              .doc(carreraName)
+              .collection('students')
+              .get();
+
+          for (var doc in studentsSnapshot.docs) {
+            final data = doc.data();
+            final facultadEstudiante =
+                data['facultad']?.toString().trim() ?? '';
+
+            // ✅ Comparación más flexible para UPeU
+            bool perteneceFacultad = false;
+
+            if (facultadEstudiante == facultad) {
+              perteneceFacultad = true;
+            }
+
+            // Caso especial para UPeU
+            if (facultad == 'Universidad Peruana Unión' &&
+                (facultadEstudiante == 'Universidad Peruana Unión' ||
+                    facultadEstudiante.contains('UPeU'))) {
+              perteneceFacultad = true;
+            }
+
+            if (perteneceFacultad) {
+              final carrera = data['carrera']?.toString().trim();
+              if (carrera != null && carrera.isNotEmpty) {
+                carrerasSet.add(carrera);
+                print(
+                  '   ✅ Carrera encontrada: $carrera (Estudiante: ${data['name']})',
+                );
+              }
+            }
+          }
+        } catch (e) {
+          print('   ⚠️ Error en $carreraName: $e');
         }
       }
 
@@ -190,8 +278,10 @@ class _AsistenciasEstudiantesScreenState
         _carreras = carrerasSet.toList()..sort();
         _carreraSeleccionada = null;
       });
+
+      print('✅ Carreras actualizadas: ${_carreras.join(", ")}');
     } catch (e) {
-      print('Error actualizando carreras: $e');
+      print('❌ Error actualizando carreras: $e');
     }
   }
 

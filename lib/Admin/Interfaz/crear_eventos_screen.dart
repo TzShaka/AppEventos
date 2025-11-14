@@ -123,7 +123,12 @@ class _CrearEventosScreenState extends State<CrearEventosScreen>
       return;
     }
 
-    final carreraError = _eventosService.validateCarrera(_selectedCarrera);
+    // ✅ Validación corregida con 2 parámetros
+    final carreraError = _eventosService.validateCarrera(
+      _selectedCarrera,
+      _selectedFacultad,
+    );
+
     if (carreraError != null) {
       _showSnackBar(carreraError, isError: true);
       return;
@@ -140,10 +145,11 @@ class _CrearEventosScreenState extends State<CrearEventosScreen>
     });
 
     try {
+      // ✅ Llamada corregida - carrera es opcional
       await _eventosService.createEvent(
         name: _eventNameController.text.trim(),
         facultad: _selectedFacultad!,
-        carrera: _selectedCarrera!,
+        carrera: _selectedCarrera, // Puede ser null
         periodoId: _selectedPeriodoId!,
         periodoNombre: _selectedPeriodoNombre!,
       );
@@ -154,7 +160,8 @@ class _CrearEventosScreenState extends State<CrearEventosScreen>
         _selectedCarrera = null;
       });
 
-      _showSnackBar('Evento creado exitosamente para $_selectedCarrera');
+      final displayName = _selectedCarrera ?? 'Universidad Peruana Unión';
+      _showSnackBar('Evento creado exitosamente para $displayName');
     } catch (e) {
       _showSnackBar('Error al crear evento: $e', isError: true);
     } finally {
@@ -290,24 +297,28 @@ class _CrearEventosScreenState extends State<CrearEventosScreen>
                         });
                       },
                     ),
-                    const SizedBox(height: 16),
 
-                    _buildDropdown(
-                      value: _selectedCarrera,
-                      label: 'Carrera/Escuela Profesional',
-                      icon: Icons.book,
-                      items: _selectedFacultad != null
-                          ? _eventosService
-                                .facultadesCarreras[_selectedFacultad]!
-                          : [],
-                      onChanged: _selectedFacultad != null
-                          ? (String? newValue) {
-                              setState(() {
-                                _selectedCarrera = newValue;
-                              });
-                            }
-                          : null,
-                    ),
+                    // ✅ Campo de carrera solo si se requiere
+                    if (_eventosService.requiereCarrera(_selectedFacultad)) ...[
+                      const SizedBox(height: 16),
+                      _buildDropdown(
+                        value: _selectedCarrera,
+                        label: 'Carrera/Escuela Profesional',
+                        icon: Icons.book,
+                        items: _selectedFacultad != null
+                            ? _eventosService
+                                  .facultadesCarreras[_selectedFacultad]!
+                            : [],
+                        onChanged: _selectedFacultad != null
+                            ? (String? newValue) {
+                                setState(() {
+                                  _selectedCarrera = newValue;
+                                });
+                              }
+                            : null,
+                      ),
+                    ],
+
                     const SizedBox(height: 16),
 
                     _buildDropdown(
@@ -644,8 +655,8 @@ class _ListaEventosScreenState extends State<ListaEventosScreen>
   final EventosService _eventosService = EventosService();
   String? _filtroFacultad;
   String? _filtroCarrera;
-  String? _filtroPeriodo; // ← NUEVO
-  List<Map<String, dynamic>> _periodos = []; // ← NUEVO
+  String? _filtroPeriodo;
+  List<Map<String, dynamic>> _periodos = [];
   late AnimationController _animationController;
 
   @override
@@ -656,7 +667,7 @@ class _ListaEventosScreenState extends State<ListaEventosScreen>
       vsync: this,
     );
     _animationController.forward();
-    _loadPeriodos(); // ← NUEVO
+    _loadPeriodos();
   }
 
   @override
@@ -665,7 +676,6 @@ class _ListaEventosScreenState extends State<ListaEventosScreen>
     super.dispose();
   }
 
-  // ← NUEVO MÉTODO
   Future<void> _loadPeriodos() async {
     final periodos = await PeriodosHelper.getPeriodosActivos();
     setState(() {
@@ -764,39 +774,42 @@ class _ListaEventosScreenState extends State<ListaEventosScreen>
                       });
                     },
                   ),
-                  const SizedBox(height: 16),
-                  DropdownButtonFormField<String>(
-                    value: editCarrera,
-                    isExpanded: true,
-                    decoration: InputDecoration(
-                      labelText: 'Carrera',
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
+                  // ✅ Solo mostrar carrera si se requiere
+                  if (_eventosService.requiereCarrera(editFacultad)) ...[
+                    const SizedBox(height: 16),
+                    DropdownButtonFormField<String>(
+                      value: editCarrera,
+                      isExpanded: true,
+                      decoration: InputDecoration(
+                        labelText: 'Carrera',
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        prefixIcon: const Icon(Icons.book),
                       ),
-                      prefixIcon: const Icon(Icons.book),
+                      items: editFacultad != null
+                          ? widget.facultadesCarreras[editFacultad]!.map((
+                              String carrera,
+                            ) {
+                              return DropdownMenuItem<String>(
+                                value: carrera,
+                                child: Text(
+                                  carrera,
+                                  style: const TextStyle(fontSize: 14),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              );
+                            }).toList()
+                          : null,
+                      onChanged: editFacultad != null
+                          ? (String? newValue) {
+                              setDialogState(() {
+                                editCarrera = newValue;
+                              });
+                            }
+                          : null,
                     ),
-                    items: editFacultad != null
-                        ? widget.facultadesCarreras[editFacultad]!.map((
-                            String carrera,
-                          ) {
-                            return DropdownMenuItem<String>(
-                              value: carrera,
-                              child: Text(
-                                carrera,
-                                style: const TextStyle(fontSize: 14),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            );
-                          }).toList()
-                        : null,
-                    onChanged: editFacultad != null
-                        ? (String? newValue) {
-                            setDialogState(() {
-                              editCarrera = newValue;
-                            });
-                          }
-                        : null,
-                  ),
+                  ],
                 ],
               ),
             ),
@@ -831,8 +844,10 @@ class _ListaEventosScreenState extends State<ListaEventosScreen>
                   return;
                 }
 
+                // ✅ Validación corregida con 2 parámetros
                 final carreraError = _eventosService.validateCarrera(
                   editCarrera,
+                  editFacultad,
                 );
                 if (carreraError != null) {
                   _showSnackBar(carreraError, isError: true);
@@ -844,7 +859,7 @@ class _ListaEventosScreenState extends State<ListaEventosScreen>
                     eventId: eventId,
                     name: editNameController.text.trim(),
                     facultad: editFacultad!,
-                    carrera: editCarrera!,
+                    carrera: editCarrera,
                   );
 
                   Navigator.pop(context);
@@ -952,7 +967,6 @@ class _ListaEventosScreenState extends State<ListaEventosScreen>
       ),
       body: Column(
         children: [
-          // Sección de filtros mejorada
           Container(
             padding: const EdgeInsets.all(16.0),
             margin: const EdgeInsets.all(16.0),
@@ -999,13 +1013,13 @@ class _ListaEventosScreenState extends State<ListaEventosScreen>
                     const Spacer(),
                     if (_filtroFacultad != null ||
                         _filtroCarrera != null ||
-                        _filtroPeriodo != null) // ← MODIFICADO
+                        _filtroPeriodo != null)
                       TextButton.icon(
                         onPressed: () {
                           setState(() {
                             _filtroFacultad = null;
                             _filtroCarrera = null;
-                            _filtroPeriodo = null; // ← AGREGADO
+                            _filtroPeriodo = null;
                           });
                         },
                         icon: const Icon(Icons.clear, size: 16),
@@ -1097,7 +1111,6 @@ class _ListaEventosScreenState extends State<ListaEventosScreen>
                       : null,
                 ),
                 const SizedBox(height: 12),
-                // ← NUEVO DROPDOWN DE PERÍODOS
                 DropdownButtonFormField<String>(
                   value: _filtroPeriodo,
                   isExpanded: true,
@@ -1137,8 +1150,6 @@ class _ListaEventosScreenState extends State<ListaEventosScreen>
               ],
             ),
           ),
-
-          // Lista de eventos
           Expanded(
             child: StreamBuilder<QuerySnapshot>(
               stream: _eventosService.getEventsStream(),
@@ -1187,7 +1198,6 @@ class _ListaEventosScreenState extends State<ListaEventosScreen>
                   _filtroCarrera,
                 );
 
-                // ← NUEVO FILTRO POR PERÍODO
                 if (_filtroPeriodo != null) {
                   events = events.where((event) {
                     final eventData = event.data() as Map<String, dynamic>;
@@ -1238,7 +1248,7 @@ class _ListaEventosScreenState extends State<ListaEventosScreen>
                     final eventData = event.data() as Map<String, dynamic>;
                     final eventName = eventData['name'] ?? 'Sin nombre';
                     final facultad = eventData['facultad'] ?? 'Sin facultad';
-                    final carrera = eventData['carrera'] ?? 'Sin carrera';
+                    final carrera = eventData['carrera'] ?? 'General';
                     final eventId = event.id;
 
                     return FadeTransition(
@@ -1279,7 +1289,6 @@ class _ListaEventosScreenState extends State<ListaEventosScreen>
                               padding: const EdgeInsets.all(12.0),
                               child: Row(
                                 children: [
-                                  // Avatar con gradiente
                                   Container(
                                     width: 50,
                                     height: 50,
@@ -1315,8 +1324,6 @@ class _ListaEventosScreenState extends State<ListaEventosScreen>
                                     ),
                                   ),
                                   const SizedBox(width: 12),
-
-                                  // Información del evento
                                   Expanded(
                                     child: Column(
                                       crossAxisAlignment:
@@ -1462,8 +1469,6 @@ class _ListaEventosScreenState extends State<ListaEventosScreen>
                                       ],
                                     ),
                                   ),
-
-                                  // Menú de opciones
                                   Container(
                                     decoration: BoxDecoration(
                                       color: Colors.grey.withOpacity(0.1),

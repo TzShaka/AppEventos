@@ -19,6 +19,7 @@ class _GestionGruposScreenState extends State<GestionGruposScreen>
   late Animation<Offset> _slideAnimation;
 
   final Map<String, List<String>> _facultadesCarreras = {
+    'Universidad Peruana Unión': [], // ✅ Nueva opción agregada
     'Facultad de Ciencias Empresariales': [
       'Administración',
       'Contabilidad',
@@ -42,6 +43,12 @@ class _GestionGruposScreenState extends State<GestionGruposScreen>
       'Ingeniería de Sistemas',
     ],
   };
+
+  // ✅ Método para verificar si se requiere selección de carrera
+  bool _requiereCarrera(String? facultad) {
+    if (facultad == null) return true;
+    return facultad != 'Universidad Peruana Unión';
+  }
 
   @override
   void initState() {
@@ -108,7 +115,10 @@ class _GestionGruposScreenState extends State<GestionGruposScreen>
                 children: [
                   _buildFilterSection(),
                   const SizedBox(height: 24),
-                  if (_selectedFacultad != null && _selectedCarrera != null)
+                  // ✅ Condición actualizada para mostrar eventos
+                  if (_selectedFacultad != null &&
+                      (!_requiereCarrera(_selectedFacultad) ||
+                          _selectedCarrera != null))
                     _buildEventsSection()
                   else
                     _buildEmptyState(),
@@ -187,22 +197,60 @@ class _GestionGruposScreenState extends State<GestionGruposScreen>
                       });
                     },
                   ),
-                  const SizedBox(height: 16),
-                  _buildAnimatedDropdown(
-                    value: _selectedCarrera,
-                    label: 'Carrera Profesional',
-                    icon: Icons.book_rounded,
-                    items: _selectedFacultad != null
-                        ? _facultadesCarreras[_selectedFacultad]!
-                        : [],
-                    onChanged: _selectedFacultad != null
-                        ? (value) {
-                            setState(() {
-                              _selectedCarrera = value;
-                            });
-                          }
-                        : null,
-                  ),
+
+                  // ✅ Solo mostrar dropdown de carrera si se requiere
+                  if (_requiereCarrera(_selectedFacultad)) ...[
+                    const SizedBox(height: 16),
+                    _buildAnimatedDropdown(
+                      value: _selectedCarrera,
+                      label: 'Carrera Profesional',
+                      icon: Icons.book_rounded,
+                      items: _selectedFacultad != null
+                          ? _facultadesCarreras[_selectedFacultad]!
+                          : [],
+                      onChanged: _selectedFacultad != null
+                          ? (value) {
+                              setState(() {
+                                _selectedCarrera = value;
+                              });
+                            }
+                          : null,
+                    ),
+                  ],
+
+                  // ✅ Mensaje informativo cuando se selecciona UPeU
+                  if (_selectedFacultad == 'Universidad Peruana Unión')
+                    Container(
+                      margin: const EdgeInsets.only(top: 16),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: Colors.white.withOpacity(0.3),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.info_outline,
+                            color: Colors.white,
+                            size: 20,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              'Mostrando eventos generales de la universidad',
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: Colors.white.withOpacity(0.95),
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -372,12 +420,7 @@ class _GestionGruposScreenState extends State<GestionGruposScreen>
               SizedBox(
                 height: 450,
                 child: StreamBuilder<QuerySnapshot>(
-                  stream: _firestore
-                      .collection('events')
-                      .where('facultad', isEqualTo: _selectedFacultad)
-                      .where('carrera', isEqualTo: _selectedCarrera)
-                      .orderBy('createdAt', descending: true)
-                      .snapshots(),
+                  stream: _buildEventsQuery(),
                   builder: (context, snapshot) {
                     if (snapshot.connectionState == ConnectionState.waiting) {
                       return Center(
@@ -434,10 +477,29 @@ class _GestionGruposScreenState extends State<GestionGruposScreen>
     );
   }
 
+  // ✅ Método para construir la query correcta según la selección
+  Stream<QuerySnapshot> _buildEventsQuery() {
+    Query query = _firestore
+        .collection('events')
+        .where('facultad', isEqualTo: _selectedFacultad);
+
+    // Si se requiere carrera (no es UPeU), agregar filtro por carrera
+    if (_requiereCarrera(_selectedFacultad) && _selectedCarrera != null) {
+      query = query.where('carrera', isEqualTo: _selectedCarrera);
+    }
+
+    return query.orderBy('createdAt', descending: true).snapshots();
+  }
+
   Widget _buildEventCard(DocumentSnapshot event, int index) {
     final eventData = event.data() as Map<String, dynamic>;
     final eventName = eventData['name'] ?? 'Sin nombre';
     final eventId = event.id;
+
+    // ✅ Mostrar carrera o "Universidad Peruana Unión" según corresponda
+    final displayCarrera = _selectedFacultad == 'Universidad Peruana Unión'
+        ? 'Universidad Peruana Unión'
+        : (_selectedCarrera ?? 'Sin carrera');
 
     return TweenAnimationBuilder<double>(
       duration: Duration(milliseconds: 300 + (index * 100)),
@@ -512,7 +574,7 @@ class _GestionGruposScreenState extends State<GestionGruposScreen>
                               ),
                               const SizedBox(height: 6),
                               Text(
-                                _selectedCarrera!,
+                                displayCarrera,
                                 style: TextStyle(
                                   fontSize: 13,
                                   color: Colors.grey[600],
@@ -635,9 +697,11 @@ class _GestionGruposScreenState extends State<GestionGruposScreen>
                     ),
                   ),
                   const SizedBox(height: 24),
-                  const Text(
-                    'Selecciona Facultad y Carrera',
-                    style: TextStyle(
+                  Text(
+                    _selectedFacultad == 'Universidad Peruana Unión'
+                        ? 'Selecciona la Universidad'
+                        : 'Selecciona Facultad y Carrera',
+                    style: const TextStyle(
                       fontSize: 20,
                       fontWeight: FontWeight.bold,
                       color: Color(0xFF1E3A5F),
@@ -647,7 +711,9 @@ class _GestionGruposScreenState extends State<GestionGruposScreen>
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 40),
                     child: Text(
-                      'Elige la facultad y carrera para ver\nlos eventos disponibles',
+                      _selectedFacultad == 'Universidad Peruana Unión'
+                          ? 'Has seleccionado eventos generales de la universidad.\nPuedes ver los eventos disponibles.'
+                          : 'Elige la facultad y carrera para ver\nlos eventos disponibles',
                       style: TextStyle(
                         fontSize: 14,
                         color: Colors.grey[600],
@@ -695,7 +761,9 @@ class _GestionGruposScreenState extends State<GestionGruposScreen>
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 40),
             child: Text(
-              'No hay eventos registrados para esta carrera.\nCrea uno en Gestión de Eventos.',
+              _selectedFacultad == 'Universidad Peruana Unión'
+                  ? 'No hay eventos generales registrados.\nCrea uno en Gestión de Eventos.'
+                  : 'No hay eventos registrados para esta carrera.\nCrea uno en Gestión de Eventos.',
               style: TextStyle(
                 fontSize: 14,
                 color: Colors.grey[600],
